@@ -1,5 +1,7 @@
 # Epub3-Kindle
 
+[![crates.io](https://img.shields.io/crates/v/epub3-kindle.svg)](https://crates.io/crates/epub3-kindle)
+
 [English](README.md) | [日本語](README.ja.md)
 
 [EPUB](https://www.w3.org/TR/epub-33/)を、AZW3またはMOBIへ変換するRustライブラリおよびCLIです。
@@ -177,7 +179,7 @@ Kindle固有の変換および互換性については、[Amazon Kindle Publishi
 
 読書順序、ナビゲーション、テキストの忠実性、日本語縦書き、ルビなど、読者から見える挙動についてもKindle実機で確認しています。
 
-対応範囲、検証方法、互換性の境界、E2Eおよび実機での検証結果の詳細については、[EPUB to KF8/AZW3 Conversion Audit](docs/CONVERSION_AUDIT.md)を参照してください。
+対応範囲、検証方法、互換性の境界、E2Eおよび実機での検証結果の詳細については、[EPUB → Kindle Conversion Audit](docs/CONVERSION_AUDIT.md)を参照してください。
 
 この監査は、本コンバーターで検証された動作についての正式な技術記録です。
 

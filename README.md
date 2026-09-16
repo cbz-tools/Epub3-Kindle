@@ -1,5 +1,7 @@
 # Epub3-Kindle
 
+[![crates.io](https://img.shields.io/crates/v/epub3-kindle.svg)](https://crates.io/crates/epub3-kindle)
+
 [English](README.md) | [日本語](README.ja.md)
 
 A Rust library and CLI for converting [EPUB](https://www.w3.org/TR/epub-33/) to AZW3 or MOBI.
@@ -179,7 +181,7 @@ Kindle-specific conversion and compatibility are evaluated using the [Amazon Kin
 
 Reader-visible behavior including reading order, navigation, text fidelity, Japanese vertical writing, and ruby has also been verified on physical Kindle devices.
 
-For the complete supported scope, validation methodology, compatibility boundaries, E2E results, and device verification, see the [EPUB to KF8/AZW3 Conversion Audit](docs/CONVERSION_AUDIT.md).
+For the complete supported scope, validation methodology, compatibility boundaries, E2E results, and device verification, see the [EPUB → Kindle Conversion Audit](docs/CONVERSION_AUDIT.md).
 
 The audit is the formal technical record of the converter's validated behavior.
 
