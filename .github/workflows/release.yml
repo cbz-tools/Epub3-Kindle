@@ -250,6 +250,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          body: |
+            [**Changelog**](https://github.com/cbz-tools/Epub3-Kindle/blob/main/CHANGELOG.md)
           files: release-assets/*
           fail_on_unmatched_files: true
       - name: Publish crate to crates.io
