@@ -1,4 +1,4 @@
-/// Project the AozoraEpub3 CSS subset observed in KindleGen output. This is a
+/// Project the supported EPUB CSS subset based on KindleGen reference output. This is a
 /// semantic stage: it only changes declarations in parsed CSS blocks and does
 /// not resolve resources, imports, URLs, or stylesheet scope.
 pub fn project_css_for_kindle(source: &str) -> String {

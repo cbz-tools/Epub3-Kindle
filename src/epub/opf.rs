@@ -124,6 +124,9 @@ pub(super) fn parse_opf(xml: &[u8]) -> Result<ParsedOpf> {
         match reader.read_event_into(&mut buffer)? {
             Event::Start(event) => {
                 let name = local_name(event.name().as_ref());
+                if name == "package" {
+                    validate_package_declaration(&event)?;
+                }
                 if name == "metadata" {
                     metadata_depth += 1;
                 } else if metadata_depth > 0 && is_metadata_element(&name) {
@@ -134,6 +137,9 @@ pub(super) fn parse_opf(xml: &[u8]) -> Result<ParsedOpf> {
             }
             Event::Empty(event) => {
                 let name = local_name(event.name().as_ref());
+                if name == "package" {
+                    validate_package_declaration(&event)?;
+                }
                 if metadata_depth > 0 && is_metadata_element(&name) {
                     apply_metadata_element(&mut result, MetadataElement::from_empty(&event, name));
                 } else {
@@ -178,6 +184,31 @@ pub(super) fn parse_opf(xml: &[u8]) -> Result<ParsedOpf> {
             "OPF must contain a manifest and spine".to_owned(),
         ));
     }
+    let mut manifest_ids = HashSet::with_capacity(result.manifest.len());
+    for item in &result.manifest {
+        if !manifest_ids.insert(item.id.as_str()) {
+            return Err(Error::InvalidEpub(format!(
+                "duplicate manifest item id {}",
+                item.id
+            )));
+        }
+    }
+    let unique_identifier = result.unique_identifier_id.as_deref().ok_or_else(|| {
+        Error::InvalidEpub(
+            "package unique-identifier attribute is required and must resolve to an identifier"
+                .to_owned(),
+        )
+    })?;
+    let identifier_resolves = result.metadata.records.iter().any(|record| {
+        record.id.as_deref() == Some(unique_identifier)
+            && property_matches(&record.property, "identifier")
+            && !record.value.trim().is_empty()
+    });
+    if !identifier_resolves {
+        return Err(Error::InvalidEpub(format!(
+            "package unique-identifier {unique_identifier} does not resolve to an identifier"
+        )));
+    }
     let publication_layout = result.publication_layout.unwrap_or_default();
     for spine_item in &mut result.spine {
         spine_item.layout = SpineLayout::from_itemref_properties(&spine_item.properties)
@@ -187,6 +218,26 @@ pub(super) fn parse_opf(xml: &[u8]) -> Result<ParsedOpf> {
     result.rendition = rendition_from_metadata(&result.metadata)?;
     finalize_metadata(&mut result.metadata);
     Ok(result)
+}
+
+fn validate_package_declaration(event: &BytesStart<'_>) -> Result<()> {
+    let version = attr(event, "version").ok_or_else(|| {
+        Error::InvalidEpub("package version is required and must be EPUB 3.x".to_owned())
+    })?;
+    if !version.starts_with("3.") {
+        return Err(Error::InvalidEpub(format!(
+            "unsupported package version {version:?}; expected EPUB 3.x"
+        )));
+    }
+    let namespace = attr(event, "xmlns").ok_or_else(|| {
+        Error::InvalidEpub("package namespace is required for EPUB 3.x".to_owned())
+    })?;
+    if namespace != "http://www.idpf.org/2007/opf" {
+        return Err(Error::InvalidEpub(format!(
+            "unsupported package namespace {namespace:?}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +280,7 @@ fn is_metadata_element(name: &str) -> bool {
             | "creator"
             | "language"
             | "identifier"
+            | "date"
             | "publisher"
             | "description"
             | "contributor"
@@ -294,7 +346,7 @@ fn refined_value<'a>(
 }
 
 fn finalize_metadata(metadata: &mut Metadata) {
-    let records = metadata.records.clone();
+    let records = metadata.records.as_slice();
     let titles = records
         .iter()
         .filter(|record| property_matches(&record.property, "title") && record.refines.is_none())
@@ -303,17 +355,17 @@ fn finalize_metadata(metadata: &mut Metadata) {
         .iter()
         .find(|record| {
             record.id.as_deref().is_some_and(|id| {
-                refined_value(&records, id, "title-type")
+                refined_value(records, id, "title-type")
                     .is_some_and(|value| value.eq_ignore_ascii_case("main"))
             })
         })
         .or_else(|| titles.first());
-    metadata.title = main_title.map(|record| record.value.clone());
-    metadata.title_file_as = main_title.and_then(|record| {
+    let title = main_title.map(|record| record.value.clone());
+    let title_file_as = main_title.and_then(|record| {
         record
             .id
             .as_deref()
-            .and_then(|id| refined_value(&records, id, "file-as"))
+            .and_then(|id| refined_value(records, id, "file-as"))
             .map(str::to_owned)
     });
 
@@ -321,25 +373,25 @@ fn finalize_metadata(metadata: &mut Metadata) {
         .iter()
         .filter(|record| property_matches(&record.property, "creator") && record.refines.is_none())
         .collect::<Vec<_>>();
-    metadata.creators = creator_records
+    let creators: Vec<CreatorMetadata> = creator_records
         .iter()
         .map(|record| CreatorMetadata {
             value: record.value.clone(),
             role: record
                 .id
                 .as_deref()
-                .and_then(|id| refined_value(&records, id, "role").map(str::to_owned)),
+                .and_then(|id| refined_value(records, id, "role").map(str::to_owned)),
         })
         .collect();
-    let first_author = metadata.creators.iter().find(|creator| {
+    let first_author = creators.iter().find(|creator| {
         creator.role.as_deref().is_none_or(|role| {
             role.eq_ignore_ascii_case("aut") || role.eq_ignore_ascii_case("author")
         })
     });
-    metadata.creator = first_author
-        .or_else(|| metadata.creators.first())
+    let creator = first_author
+        .or_else(|| creators.first())
         .map(|creator| creator.value.clone());
-    metadata.creator_file_as = first_author.and_then(|creator| {
+    let creator_file_as = first_author.and_then(|creator| {
         creator_records
             .iter()
             .find(|record| record.value == creator.value)
@@ -347,34 +399,51 @@ fn finalize_metadata(metadata: &mut Metadata) {
                 record
                     .id
                     .as_deref()
-                    .and_then(|id| refined_value(&records, id, "file-as"))
+                    .and_then(|id| refined_value(records, id, "file-as"))
                     .map(str::to_owned)
             })
     });
-    if let Some(publisher) = records
-        .iter()
-        .rev()
-        .find(|record| property_matches(&record.property, "publisher") && record.refines.is_none())
-    {
-        metadata.publisher = Some(publisher.value.clone());
-        metadata.publisher_file_as = publisher
-            .id
-            .as_deref()
-            .and_then(|id| refined_value(&records, id, "file-as").map(str::to_owned));
-    }
-    metadata.language = records
+    let (publisher, publisher_file_as) =
+        if let Some(publisher) = records.iter().rev().find(|record| {
+            property_matches(&record.property, "publisher") && record.refines.is_none()
+        }) {
+            (
+                Some(publisher.value.clone()),
+                publisher
+                    .id
+                    .as_deref()
+                    .and_then(|id| refined_value(records, id, "file-as").map(str::to_owned)),
+            )
+        } else {
+            (None, None)
+        };
+    let language = records
         .iter()
         .rev()
         .find(|record| property_matches(&record.property, "language") && record.refines.is_none())
         .map(|record| record.value.clone())
         .or_else(|| metadata.language.clone());
-    metadata.identifier = records
+    let identifier = records
         .iter()
         .rev()
         .find(|record| property_matches(&record.property, "identifier") && record.refines.is_none())
         .map(|record| record.value.clone())
         .or_else(|| metadata.identifier.clone());
-    metadata.description = records
+    let publication_date = records
+        .iter()
+        .rev()
+        .find(|record| record.property.eq_ignore_ascii_case("date") && record.refines.is_none())
+        .map(|record| record.value.clone())
+        .or_else(|| metadata.publication_date.clone());
+    let modified = records
+        .iter()
+        .rev()
+        .find(|record| {
+            record.property.eq_ignore_ascii_case("dcterms:modified") && record.refines.is_none()
+        })
+        .map(|record| record.value.clone())
+        .or_else(|| metadata.modified.clone());
+    let description = records
         .iter()
         .rev()
         .find(|record| {
@@ -382,7 +451,7 @@ fn finalize_metadata(metadata: &mut Metadata) {
         })
         .map(|record| record.value.clone())
         .or_else(|| metadata.description.clone());
-    metadata.contributors = records
+    let contributors = records
         .iter()
         .filter(|record| {
             property_matches(&record.property, "contributor") && record.refines.is_none()
@@ -390,7 +459,7 @@ fn finalize_metadata(metadata: &mut Metadata) {
         .map(|record| record.value.clone())
         .collect();
 
-    metadata.collection = records
+    let collection = records
         .iter()
         .filter(|record| {
             property_matches(&record.property, "belongs-to-collection")
@@ -398,10 +467,25 @@ fn finalize_metadata(metadata: &mut Metadata) {
         })
         .map(|record| CollectionMetadata {
             name: record.value.clone(),
-            collection_type: collection_refinement(&records, record, "collection-type"),
-            group_position: collection_refinement(&records, record, "group-position"),
+            collection_type: collection_refinement(records, record, "collection-type"),
+            group_position: collection_refinement(records, record, "group-position"),
         })
         .collect();
+
+    metadata.title = title;
+    metadata.title_file_as = title_file_as;
+    metadata.creators = creators;
+    metadata.creator = creator;
+    metadata.creator_file_as = creator_file_as;
+    metadata.publisher = publisher;
+    metadata.publisher_file_as = publisher_file_as;
+    metadata.language = language;
+    metadata.identifier = identifier;
+    metadata.publication_date = publication_date;
+    metadata.modified = modified;
+    metadata.description = description;
+    metadata.contributors = contributors;
+    metadata.collection = collection;
 }
 
 fn collection_refinement(

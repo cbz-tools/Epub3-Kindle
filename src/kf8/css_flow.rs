@@ -10,8 +10,8 @@ use super::format::{to_base32, to_base32_fixed};
 use super::resource::{is_binary_resource, is_css_resource, is_font_resource, is_image_resource};
 use crate::css::{
     SYNTHETIC_INLINE_CSS_PROPERTY, advance_css_char, css_function_at, css_import_spans,
-    css_import_targets, skip_css_comment, skip_css_space_comments, skip_css_string,
-    traverse_css_dependencies,
+    css_import_targets, is_remote_reference, skip_css_comment, skip_css_space_comments,
+    skip_css_string, traverse_css_dependencies,
 };
 use crate::kindle::{KindleResource as Resource, KindleSection};
 use crate::xhtml::path::{normalize_path, resolve_path};
@@ -75,20 +75,6 @@ impl<'a> ResourceIndex<'a> {
                 let resource = self.resources.get(index)?;
                 is_css_resource(resource).then_some(resource)
             })
-    }
-
-    pub(crate) fn any_css(
-        &self,
-        normalized_href: &str,
-        predicate: impl FnMut(&Resource) -> bool,
-    ) -> bool {
-        self.by_href
-            .get(normalized_href)
-            .into_iter()
-            .flatten()
-            .filter_map(|&index| self.resources.get(index))
-            .filter(|resource| is_css_resource(resource))
-            .any(predicate)
     }
 
     fn resource_reference(&self, base_href: &str, target: &str) -> Option<String> {
@@ -282,6 +268,11 @@ pub(crate) fn rewrite_css_urls(
     let mut cursor = 0;
     for url in css_url_spans(source) {
         let target = &source[url.target_start..url.target_end];
+        if is_remote_reference(target) {
+            result.push_str(&source[cursor..url.start]);
+            cursor = url.close_end;
+            continue;
+        }
         let Some(reference) = resources.resource_reference(css_href, target) else {
             continue;
         };
@@ -409,6 +400,11 @@ fn rewrite_css_imports(
     let mut cursor = 0;
     for import in css_import_spans(source) {
         let target = &source[import.target_start..import.target_end];
+        if is_remote_reference(target) {
+            result.push_str(&source[cursor..import.statement_start]);
+            cursor = css_import_statement_end(source, import.wrapper_end);
+            continue;
+        }
         let Some(flow_number) = css_flow_number(css_href, target, css_resources) else {
             continue;
         };
@@ -424,6 +420,12 @@ fn rewrite_css_imports(
     }
     result.push_str(&source[cursor..]);
     result
+}
+
+fn css_import_statement_end(source: &str, start: usize) -> usize {
+    source[start..]
+        .find(';')
+        .map_or(source.len(), |offset| start + offset + 1)
 }
 
 pub(crate) fn resource_reference(

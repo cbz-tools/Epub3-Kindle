@@ -97,6 +97,7 @@ pub struct PositionMap {
     sections: Vec<SectionPosition>,
     section_by_href: HashMap<String, usize>,
     entry_by_section_fragment: HashMap<(usize, String), usize>,
+    section_first_fragment: Vec<Option<usize>>,
 }
 
 impl PositionMap {
@@ -132,6 +133,7 @@ impl PositionMap {
             // document-local FRAG payload-stream coordinate and resets here.
             let mut rendered_fragment_offset = 0u32;
             let mut section_fragments = Vec::with_capacity(parts.fragments.len());
+            map.section_first_fragment.push(None);
             for (fragment_index, fragment) in parts.fragments.iter().enumerate() {
                 let payload_length = u32::try_from(fragment.len())
                     .map_err(|_| Error::Output("position map fragment exceeds u32".to_owned()))?;
@@ -156,6 +158,9 @@ impl PositionMap {
                     payload_length,
                     sequence,
                 ));
+                if fragment_index == 0 {
+                    map.section_first_fragment[section_index] = Some(map.fragments.len());
+                }
                 map.fragments.push(PositionMapFragment {
                     section_index,
                     fragment_index: u32::try_from(fragment_index).map_err(|_| {
@@ -319,9 +324,10 @@ impl PositionMap {
             });
         }
         let fragment = self
-            .fragments
-            .iter()
-            .find(|fragment| fragment.section_index == section_index)
+            .section_first_fragment
+            .get(section_index)
+            .and_then(|index| *index)
+            .and_then(|index| self.fragments.get(index))
             .ok_or_else(|| Error::Output(format!("section has no fragment: {href}")))?;
         Ok(ResolvedPosition {
             section_index,

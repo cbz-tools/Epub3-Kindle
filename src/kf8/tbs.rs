@@ -9,6 +9,8 @@
 use super::indx::encode_vwi;
 use crate::error::Result;
 use crate::kindle::KindleNavigationItem;
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, BinaryHeap, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TbsEntry {
@@ -75,37 +77,104 @@ fn fill_entry(entry: &TbsEntry, start_offset: isize, text_record_length: usize) 
 
 // Follow parent/child relationships and contiguous siblings into one strand so
 // hierarchy survives the later layer grouping and sequence encoding.
-fn populate_strand(parent: LocalTbsEntry, entries: &mut Vec<LocalTbsEntry>) -> Vec<LocalTbsEntry> {
+struct EntryPool {
+    entries: Vec<Option<LocalTbsEntry>>,
+    positions_by_index: HashMap<usize, Vec<usize>>,
+    children_by_parent: HashMap<usize, Vec<usize>>,
+    next_first: usize,
+}
+
+impl EntryPool {
+    fn new(entries: Vec<LocalTbsEntry>) -> Self {
+        let mut positions_by_index: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut children_by_parent: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (position, entry) in entries.iter().enumerate() {
+            positions_by_index
+                .entry(entry.entry.index)
+                .or_default()
+                .push(position);
+            if let Some(parent) = entry.entry.parent {
+                children_by_parent.entry(parent).or_default().push(position);
+            }
+        }
+        Self {
+            entries: entries.into_iter().map(Some).collect(),
+            positions_by_index,
+            children_by_parent,
+            next_first: 0,
+        }
+    }
+
+    fn take_position(&mut self, position: usize) -> Option<LocalTbsEntry> {
+        let entry = self.entries.get_mut(position)?.take()?;
+        Some(entry)
+    }
+
+    fn take_first(&mut self) -> Option<LocalTbsEntry> {
+        while self.next_first < self.entries.len() {
+            let position = self.next_first;
+            self.next_first += 1;
+            if self.entries[position].is_some() {
+                return self.take_position(position);
+            }
+        }
+        None
+    }
+
+    fn take_child(&mut self, parent: usize) -> Option<LocalTbsEntry> {
+        let position = self
+            .children_by_parent
+            .get(&parent)?
+            .iter()
+            .copied()
+            .find(|&position| self.entries[position].is_some())?;
+        self.take_position(position)
+    }
+
+    fn take_sibling(
+        &mut self,
+        parent: &LocalTbsEntry,
+        current_index: usize,
+    ) -> Option<LocalTbsEntry> {
+        let position = self
+            .positions_by_index
+            .get(&(current_index + 1))?
+            .iter()
+            .copied()
+            .find(|&position| {
+                self.entries[position].as_ref().is_some_and(|candidate| {
+                    candidate.entry.depth == parent.entry.depth
+                        && candidate.entry.parent == parent.entry.parent
+                })
+            })?;
+        self.take_position(position)
+    }
+
+    fn has_child(&self, parent: usize) -> bool {
+        self.children_by_parent
+            .get(&parent)
+            .is_some_and(|positions| {
+                positions
+                    .iter()
+                    .any(|&position| self.entries[position].is_some())
+            })
+    }
+}
+
+fn populate_strand(parent: LocalTbsEntry, entries: &mut EntryPool) -> Vec<LocalTbsEntry> {
     let mut answer = vec![parent.clone()];
-    let children = entries
-        .iter()
-        .position(|entry| entry.entry.parent == Some(parent.entry.index));
-    if let Some(child) = children {
-        let child = entries.remove(child);
+    if let Some(child) = entries.take_child(parent.entry.index) {
         answer.extend(populate_strand(child, entries));
     } else {
         let mut current_index = parent.entry.index;
         let mut siblings = Vec::new();
-        let mut index = 0;
-        while index < entries.len() {
-            let entry = &entries[index];
-            if entry.entry.depth == parent.entry.depth
-                && entry.entry.parent == parent.entry.parent
-                && entry.entry.index == current_index + 1
-            {
-                let entry = entries.remove(index);
-                current_index += 1;
-                let has_children = entries
-                    .iter()
-                    .any(|candidate| candidate.entry.parent == Some(entry.entry.index));
-                if has_children {
-                    siblings.extend(populate_strand(entry, entries));
-                    break;
-                }
-                siblings.push(entry);
-            } else {
-                index += 1;
+        while let Some(entry) = entries.take_sibling(&parent, current_index) {
+            current_index = entry.entry.index;
+            if entries.has_child(entry.entry.index) {
+                siblings.extend(populate_strand(entry, entries));
+                break;
             }
+            siblings.push(entry);
         }
         answer.extend(siblings);
     }
@@ -115,18 +184,18 @@ fn populate_strand(parent: LocalTbsEntry, entries: &mut Vec<LocalTbsEntry>) -> V
 pub(super) type StrandLayers = Vec<(usize, Vec<LocalTbsEntry>)>;
 
 // Split local entries into strands, then group each strand by navigation depth.
-fn separate_strands(mut entries: Vec<LocalTbsEntry>) -> Vec<StrandLayers> {
+fn separate_strands(entries: Vec<LocalTbsEntry>) -> Vec<StrandLayers> {
+    let mut entries = EntryPool::new(entries);
     let mut answer = Vec::new();
-    while !entries.is_empty() {
-        let top = entries.remove(0);
+    while let Some(top) = entries.take_first() {
         let strand = populate_strand(top, &mut entries);
         let mut layers: StrandLayers = Vec::new();
         for entry in strand {
-            if let Some((_, layer)) = layers
-                .iter_mut()
-                .find(|(depth, _)| *depth == entry.entry.depth)
-            {
-                layer.push(entry);
+            let layer = layers
+                .iter()
+                .position(|(depth, _)| *depth == entry.entry.depth);
+            if let Some(layer) = layer {
+                layers[layer].1.push(entry);
             } else {
                 layers.push((entry.entry.depth, vec![entry]));
             }
@@ -146,27 +215,68 @@ pub(super) fn collect_indexing_data(
     sorted_entries.sort_by_key(|entry| entry.start);
     let mut data = Vec::with_capacity(text_record_lengths.len());
     let mut record_start = 0usize;
+    let mut next_entry = 0usize;
+    let mut active_positions: BTreeSet<usize> = BTreeSet::new();
+    let mut expiry_queue: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new();
     for &record_length in text_record_lengths {
         let next_record_start = record_start.checked_add(record_length).ok_or_else(|| {
             crate::error::Error::Output("TBS record position overflow".to_owned())
         })?;
-        let mut local_entries = Vec::new();
-        for entry in &sorted_entries {
-            let entry_end = entry.start.checked_add(entry.length).ok_or_else(|| {
-                crate::error::Error::Output("TBS entry position overflow".to_owned())
-            })?;
-            if entry.start >= next_record_start {
+
+        while let Some(&Reverse((entry_end, position))) = expiry_queue.peek() {
+            if entry_end > record_start {
                 break;
             }
-            if entry_end <= record_start {
-                continue;
-            }
+            expiry_queue.pop();
+            active_positions.remove(&position);
+        }
+
+        let mut local_entries = Vec::new();
+
+        // Entries already reached by the sweep precede all newly reached
+        // entries in sorted_entries, so this preserves the old scan order.
+        for &position in &active_positions {
+            let entry = &sorted_entries[position];
             let start_offset = isize::try_from(entry.start)
                 .and_then(|start| isize::try_from(record_start).map(|record| start - record))
                 .map_err(|_| {
                     crate::error::Error::Output("TBS position exceeds isize".to_owned())
                 })?;
             local_entries.push(fill_entry(entry, start_offset, record_length));
+        }
+
+        while next_entry < sorted_entries.len()
+            && sorted_entries[next_entry].start < next_record_start
+        {
+            let position = next_entry;
+            let entry = &sorted_entries[position];
+            let entry_end = entry.start.checked_add(entry.length).ok_or_else(|| {
+                crate::error::Error::Output("TBS entry position overflow".to_owned())
+            })?;
+
+            if entry_end > record_start {
+                let start_offset = isize::try_from(entry.start)
+                    .and_then(|start| isize::try_from(record_start).map(|record| start - record))
+                    .map_err(|_| {
+                        crate::error::Error::Output("TBS position exceeds isize".to_owned())
+                    })?;
+                local_entries.push(fill_entry(entry, start_offset, record_length));
+                active_positions.insert(position);
+                expiry_queue.push(Reverse((entry_end, position)));
+            }
+            next_entry += 1;
+        }
+
+        // The former full scan checked the first entry at or beyond the
+        // boundary before breaking; retain that overflow behavior while the
+        // sweep advances only through intersecting start positions.
+        if next_entry < sorted_entries.len() {
+            sorted_entries[next_entry]
+                .start
+                .checked_add(sorted_entries[next_entry].length)
+                .ok_or_else(|| {
+                    crate::error::Error::Output("TBS entry position overflow".to_owned())
+                })?;
         }
         data.push(separate_strands(local_entries));
         record_start = next_record_start;

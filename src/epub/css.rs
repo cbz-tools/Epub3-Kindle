@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::book::{ContentDocument, CssDeclaration, CssRule, Resource, StyleSheet};
-use crate::css::{css_import_targets, traverse_css_dependencies};
+use crate::css::{css_import_spans, css_import_targets, is_remote_reference};
 use crate::error::{Error, Result};
-use crate::xhtml::path::{normalize_path_lossy as normalize_path, resolve_path};
+use crate::xhtml::path::{
+    is_external_reference, normalize_path_lossy as normalize_path, resolve_path,
+};
+use crate::{WarningCode, WarningCollector};
 
 pub fn parse_css(href: impl Into<String>, source: impl Into<String>) -> StyleSheet {
     let href = href.into();
@@ -41,10 +44,10 @@ pub fn parse_css(href: impl Into<String>, source: impl Into<String>) -> StyleShe
 }
 
 pub(super) fn active_css_stylesheets(
+    index: &CssResourceIndex<'_>,
     content: &[ContentDocument],
-    resources: &[Resource],
-) -> HashSet<String> {
-    let index = CssResourceIndex::new(content, resources);
+    warnings: &mut WarningCollector,
+) -> Result<HashSet<String>> {
     let roots = content
         .iter()
         .flat_map(|document| {
@@ -54,28 +57,175 @@ pub(super) fn active_css_stylesheets(
                 .map(|reference| (document.href.clone(), reference.clone()))
         })
         .collect::<Vec<_>>();
-    traverse_css_dependencies(roots, |base_href, reference| {
-        let resolved = resolve_path(base_href, reference)?;
-        let resource = index.by_href.get(&resolved).copied()?;
+    let mut active = HashSet::new();
+    let mut pending = roots;
+    while let Some((base_href, reference)) = pending.pop() {
+        let Some(resolved) = resolve_path(&base_href, &reference) else {
+            if !is_external_reference(&reference) {
+                return Err(Error::InvalidEpub(format!(
+                    "CSS resource path {reference} escapes the EPUB root"
+                )));
+            }
+            if is_remote_reference(&reference) {
+                warnings.add_once(
+                    WarningCode::W004,
+                    "remote CSS @import or stylesheet reference was dropped without fetching",
+                );
+            }
+            continue;
+        };
+        if !active.insert(resolved.clone()) {
+            continue;
+        }
+        let Some(resource) = index.by_href.get(&resolved).copied() else {
+            continue;
+        };
         let source = std::str::from_utf8(&resource.data)
             .expect("EPUB CSS resources are normalized to UTF-8");
-        Some((
-            resolved,
-            index.import_base_href(resource),
-            css_import_targets(source),
-        ))
-    })
-    .into_iter()
-    .collect()
+        let import_base_href = index.import_base_href(resource);
+        pending.extend(
+            css_import_targets(source)
+                .into_iter()
+                .map(|target| (import_base_href.clone(), target)),
+        );
+    }
+    Ok(active)
 }
 
-struct CssResourceIndex<'a> {
+/// Return local URLs found in `@font-face` blocks. The caller resolves these
+/// URLs against the stylesheet and applies font-specific policy only to the
+/// referenced resources.
+pub(super) fn font_face_resource_references(source: &str) -> Result<Vec<String>> {
+    let mut references = Vec::new();
+    scan_font_face_blocks(source, 0, source.len(), &mut references)?;
+    Ok(references)
+}
+
+fn scan_font_face_blocks(
+    source: &str,
+    start: usize,
+    end: usize,
+    references: &mut Vec<String>,
+) -> Result<()> {
+    let mut cursor = start;
+    while cursor < end {
+        cursor = skip_whitespace_and_comments(source, cursor, end)?;
+        if cursor >= end {
+            break;
+        }
+        let statement_start = cursor;
+        let (boundary, kind) = find_boundary(source, cursor, end)?;
+        match kind {
+            Boundary::Semicolon => cursor = boundary + 1,
+            Boundary::OpenBrace => {
+                let close = matching_brace(source, boundary, end)?;
+                if is_font_face_prelude(source, statement_start, boundary)? {
+                    references.extend(css_url_targets(source, boundary + 1, close)?);
+                } else if is_at_rule_prelude(source, statement_start, boundary)? {
+                    // Grouping at-rules such as @media and @supports may
+                    // contain a valid @font-face statement. Qualified rule
+                    // blocks contain declarations, where the token must not
+                    // be mistaken for another CSS statement.
+                    scan_font_face_blocks(source, boundary + 1, close, references)?;
+                }
+                cursor = close + 1;
+            }
+            Boundary::CloseBrace => return malformed_css("unexpected closing brace"),
+            Boundary::End => break,
+        }
+    }
+    Ok(())
+}
+
+fn is_font_face_prelude(source: &str, start: usize, boundary: usize) -> Result<bool> {
+    let token_end = start + "@font-face".len();
+    if source
+        .get(start..token_end)
+        .is_none_or(|candidate| !candidate.eq_ignore_ascii_case("@font-face"))
+    {
+        return Ok(false);
+    }
+    let after_token = skip_whitespace_and_comments(source, token_end, boundary)?;
+    Ok(after_token == boundary)
+}
+
+fn is_at_rule_prelude(source: &str, start: usize, boundary: usize) -> Result<bool> {
+    let start = skip_whitespace_and_comments(source, start, boundary)?;
+    Ok(source.as_bytes().get(start) == Some(&b'@'))
+}
+
+pub(super) fn validate_local_resource_paths(source: &str, stylesheet_href: &str) -> Result<()> {
+    for target in css_url_targets(source, 0, source.len())? {
+        if !is_external_reference(&target) && resolve_path(stylesheet_href, &target).is_none() {
+            return Err(Error::InvalidEpub(format!(
+                "CSS resource path {target} escapes the EPUB root"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn css_url_targets(source: &str, start: usize, end: usize) -> Result<Vec<String>> {
+    let mut references = Vec::new();
+    let mut cursor = start;
+    while cursor < end {
+        if let Some(next) = skip_url(source, cursor, end)? {
+            if let Some(target) = css_url_target(source, cursor, next) {
+                references.push(target);
+            }
+            cursor = next;
+        } else if source.as_bytes()[cursor] == b'/'
+            && source.as_bytes().get(cursor + 1) == Some(&b'*')
+        {
+            cursor = skip_comment(source, cursor, end)?;
+        } else if matches!(source.as_bytes()[cursor], b'\'' | b'"') {
+            cursor = skip_string(source, cursor, end)?;
+        } else {
+            cursor = advance_char(source, cursor);
+        }
+    }
+    Ok(references)
+}
+
+fn css_url_target(source: &str, start: usize, end: usize) -> Option<String> {
+    let open = source[start..end].find('(')? + start + 1;
+    let mut cursor = open;
+    while cursor < end && source.as_bytes()[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    if source
+        .as_bytes()
+        .get(cursor)
+        .is_some_and(|byte| *byte == b'\'' || *byte == b'"')
+    {
+        let quote = source.as_bytes()[cursor];
+        let value_start = cursor + 1;
+        let value_end = source[value_start..end]
+            .find(quote as char)
+            .map(|offset| value_start + offset)?;
+        return Some(source[value_start..value_end].to_owned());
+    }
+    let value_start = cursor;
+    while cursor < end && !source.as_bytes()[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    Some(source[value_start..cursor].trim_end_matches(')').to_owned())
+}
+
+fn advance_char(source: &str, cursor: usize) -> usize {
+    source[cursor..]
+        .chars()
+        .next()
+        .map_or(source.len(), |character| cursor + character.len_utf8())
+}
+
+pub(super) struct CssResourceIndex<'a> {
     by_href: HashMap<String, &'a Resource>,
     synthetic_origins: HashMap<String, &'a str>,
 }
 
 impl<'a> CssResourceIndex<'a> {
-    fn new(content: &'a [ContentDocument], resources: &'a [Resource]) -> Self {
+    pub(super) fn new(content: &'a [ContentDocument], resources: &'a [Resource]) -> Self {
         let mut by_href = HashMap::new();
         let mut synthetic_hrefs = HashSet::new();
         for resource in resources {
@@ -115,7 +265,7 @@ impl<'a> CssResourceIndex<'a> {
         }
     }
 
-    fn import_base_href(&self, resource: &Resource) -> String {
+    pub(super) fn import_base_href(&self, resource: &Resource) -> String {
         let is_synthetic = resource
             .properties
             .iter()
@@ -132,12 +282,69 @@ impl<'a> CssResourceIndex<'a> {
     }
 }
 
+pub(super) fn css_resource_base_href(index: &CssResourceIndex<'_>, resource: &Resource) -> String {
+    index.import_base_href(resource)
+}
+
 pub(super) fn validate_kf8_css(source: &str) -> Result<()> {
     scan_stylesheet(source, 0, source.len())
 }
 
+pub(super) fn validate_kf8_css_with_warnings(
+    source: &str,
+    warnings: &mut WarningCollector,
+) -> Result<()> {
+    match validate_kf8_css(source) {
+        Ok(()) => Ok(()),
+        Err(error @ Error::UnsupportedEpub(_)) => {
+            warnings.add_once(
+                WarningCode::W004,
+                format!("CSS presentation semantics were degraded: {error}"),
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub(super) fn validate_kf8_inline_style(source: &str) -> Result<()> {
     scan_inline_declarations(source)
+}
+
+pub(super) fn validate_kf8_inline_style_with_warnings(
+    source: &str,
+    warnings: &mut WarningCollector,
+) -> Result<()> {
+    match validate_kf8_inline_style(source) {
+        Ok(()) => Ok(()),
+        Err(error @ Error::UnsupportedEpub(_)) => {
+            warnings.add_once(
+                WarningCode::W004,
+                format!("inline CSS presentation semantics were degraded: {error}"),
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn warn_remote_css_references(
+    source: &str,
+    warnings: &mut WarningCollector,
+) -> Result<()> {
+    let has_remote_import = css_import_spans(source)
+        .iter()
+        .any(|span| is_remote_reference(&source[span.target_start..span.target_end]));
+    let has_remote_url = css_url_targets(source, 0, source.len())?
+        .iter()
+        .any(|target| is_remote_reference(target));
+    if has_remote_import || has_remote_url {
+        warnings.add_once(
+            WarningCode::W004,
+            "remote CSS url() references were dropped without fetching",
+        );
+    }
+    Ok(())
 }
 
 fn scan_stylesheet(source: &str, start: usize, end: usize) -> Result<()> {

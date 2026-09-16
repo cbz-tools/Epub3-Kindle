@@ -3,6 +3,7 @@
 //! This module absorbs source-format differences and canonicalizes navigation
 //! targets; KF8 INDX/CTOC serialization remains in `kf8::ncx`.
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 
@@ -15,6 +16,7 @@ use crate::book::{
     Navigation, NavigationGroup, NavigationItem, NavigationLandmark, plain_display_text,
 };
 use crate::error::{Error, Result};
+use crate::xhtml::path::{is_external_reference, resolve_path};
 pub(super) fn parse_ncx(xml: &[u8]) -> Result<Navigation> {
     let mut reader = Reader::from_reader(Cursor::new(xml));
     reader.config_mut().trim_text(true);
@@ -106,10 +108,19 @@ pub(super) fn parse_nav_xhtml(xml: &[u8]) -> Result<Navigation> {
     let mut current_unlinked_span: Option<String> = None;
     let mut list_items: Vec<(NavigationItem, Option<String>)> = Vec::new();
     let mut nav_stack: Vec<Option<String>> = Vec::new();
+    let mut toc_nav_count = 0usize;
     loop {
         match reader.read_event_into(&mut buffer)? {
             Event::Start(event) if local_name(event.name().as_ref()) == "nav" => {
+                if attr(&event, "type").is_some_and(|kind| has_token(&kind, "toc")) {
+                    toc_nav_count += 1;
+                }
                 nav_stack.push(nav_kind(&event));
+            }
+            Event::Empty(event) if local_name(event.name().as_ref()) == "nav" => {
+                if attr(&event, "type").is_some_and(|kind| has_token(&kind, "toc")) {
+                    toc_nav_count += 1;
+                }
             }
             Event::Start(event) if local_name(event.name().as_ref()) == "li" => {
                 if !nav_stack.is_empty() {
@@ -209,7 +220,15 @@ pub(super) fn parse_nav_xhtml(xml: &[u8]) -> Result<Navigation> {
         }
         buffer.clear();
     }
-    Ok(navigation)
+    match toc_nav_count {
+        0 => Err(Error::InvalidEpub(
+            "navigation document has no epub:type=toc nav".to_owned(),
+        )),
+        1 => Ok(navigation),
+        count => Err(Error::InvalidEpub(format!(
+            "navigation document contains {count} epub:type=toc nav elements; exactly one is required"
+        ))),
+    }
 }
 
 fn append_nav_item(
@@ -281,28 +300,38 @@ pub(super) fn canonicalize_navigation(
     navigation_path: &str,
     opf_base: &Path,
     manifest: &[ManifestItem],
-) {
+) -> Result<()> {
     let navigation_base = Path::new(navigation_path)
         .parent()
         .unwrap_or_else(|| Path::new(""));
+    let mut manifest_by_resolved_path = HashMap::with_capacity(manifest.len());
+    for candidate in manifest.iter().filter(|candidate| {
+        candidate
+            .media_type
+            .eq_ignore_ascii_case("application/xhtml+xml")
+            || candidate.media_type.eq_ignore_ascii_case("text/html")
+    }) {
+        let resolved_path = resolve_href(opf_base, &candidate.href);
+        // Preserve the old manifest.iter().find() behavior for duplicate and
+        // empty resolved paths: the first declaration wins. Empty is a valid
+        // lookup key here because resolve_href returns it for external hrefs.
+        manifest_by_resolved_path
+            .entry(resolved_path)
+            .or_insert_with(|| candidate.href.clone());
+    }
     for item in &mut navigation.items {
-        canonicalize_navigation_item(item, navigation_base, opf_base, manifest);
+        canonicalize_navigation_item(item, navigation_base, &manifest_by_resolved_path)?;
     }
     for item in &mut navigation.page_list {
-        canonicalize_navigation_item(item, navigation_base, opf_base, manifest);
+        canonicalize_navigation_item(item, navigation_base, &manifest_by_resolved_path)?;
     }
     for landmark in &mut navigation.landmarks {
         let (target_path, suffix) = split_link_suffix(&landmark.href);
         if !target_path.is_empty() {
+            validate_local_navigation_target(target_path, navigation_base)?;
             let resolved_target = resolve_href(navigation_base, target_path);
-            if let Some(manifest_item) = manifest.iter().find(|candidate| {
-                (candidate
-                    .media_type
-                    .eq_ignore_ascii_case("application/xhtml+xml")
-                    || candidate.media_type.eq_ignore_ascii_case("text/html"))
-                    && resolve_href(opf_base, &candidate.href) == resolved_target
-            }) {
-                landmark.href = format!("{}{}", manifest_item.href, suffix);
+            if let Some(manifest_href) = manifest_by_resolved_path.get(&resolved_target) {
+                landmark.href = format!("{}{}", manifest_href, suffix);
             } else {
                 landmark.href = format!("{}{}", resolved_target, suffix);
             }
@@ -310,38 +339,47 @@ pub(super) fn canonicalize_navigation(
     }
     for group in &mut navigation.custom {
         for item in &mut group.items {
-            canonicalize_navigation_item(item, navigation_base, opf_base, manifest);
+            canonicalize_navigation_item(item, navigation_base, &manifest_by_resolved_path)?;
         }
     }
+    Ok(())
 }
 
 fn canonicalize_navigation_item(
     item: &mut NavigationItem,
     navigation_base: &Path,
-    opf_base: &Path,
-    manifest: &[ManifestItem],
-) {
+    manifest_by_resolved_path: &HashMap<String, String>,
+) -> Result<()> {
     let (target_path, suffix) = split_link_suffix(&item.href);
     if !target_path.is_empty() {
+        validate_local_navigation_target(target_path, navigation_base)?;
         let resolved_target = resolve_href(navigation_base, target_path);
-        if let Some(manifest_item) = manifest.iter().find(|candidate| {
-            (candidate
-                .media_type
-                .eq_ignore_ascii_case("application/xhtml+xml")
-                || candidate.media_type.eq_ignore_ascii_case("text/html"))
-                && resolve_href(opf_base, &candidate.href) == resolved_target
-        }) {
+        if let Some(manifest_href) = manifest_by_resolved_path.get(&resolved_target) {
             // Keep the manifest spelling, including case, as the Book IR's
             // canonical document name. Only the navigation source-relative
             // prefix is normalized here.
-            item.href = format!("{}{}", manifest_item.href, suffix);
+            item.href = format!("{}{}", manifest_href, suffix);
         } else {
             item.href = format!("{}{}", resolved_target, suffix);
         }
     }
     for child in &mut item.children {
-        canonicalize_navigation_item(child, navigation_base, opf_base, manifest);
+        canonicalize_navigation_item(child, navigation_base, manifest_by_resolved_path)?;
     }
+    Ok(())
+}
+
+fn validate_local_navigation_target(target: &str, navigation_base: &Path) -> Result<()> {
+    if is_external_reference(target) {
+        return Ok(());
+    }
+    let base = format!("{}/", navigation_base.to_string_lossy());
+    if resolve_path(&base, target).is_none() {
+        return Err(Error::InvalidEpub(format!(
+            "navigation target {target} escapes the EPUB root"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn split_link_suffix(href: &str) -> (&str, &str) {

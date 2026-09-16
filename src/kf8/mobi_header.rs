@@ -19,6 +19,9 @@ pub struct MobiHeader {
     pub flis_record: u32,
     pub flis_count: u32,
     pub last_image_index: u16,
+    /// KF7's content range occupies the same header words as KF8's FDST
+    /// pointer/count pair. `None` preserves the KF8 encoding.
+    pub content_record_range: Option<(u16, u16)>,
     pub extra_data_flags: u16,
     pub fdst_record: u32,
     pub fdst_flow_count: u32,
@@ -53,6 +56,7 @@ impl Default for MobiHeader {
             flis_record: u32::MAX,
             flis_count: 0,
             last_image_index: u16::MAX,
+            content_record_range: None,
             extra_data_flags: 0,
             fdst_record: 0xffff_ffff,
             fdst_flow_count: 0,
@@ -71,9 +75,9 @@ impl MobiHeader {
                 "KF8 MOBI header length must be 264 bytes".to_owned(),
             ));
         }
-        if self.version < 8 || self.min_version < 8 {
+        if self.version < 6 || self.min_version < 6 {
             return Err(crate::error::Error::Output(
-                "KF8 MOBI header must use version 8".to_owned(),
+                "MOBI header must use version 6 or newer".to_owned(),
             ));
         }
         if self.first_resource_record != u32::MAX
@@ -83,6 +87,13 @@ impl MobiHeader {
             return Err(crate::error::Error::Output(
                 "MOBI first resource/image pointers disagree".to_owned(),
             ));
+        }
+        if let Some((first, last)) = self.content_record_range {
+            if first > last {
+                return Err(crate::error::Error::Output(
+                    "MOBI content record range is reversed".to_owned(),
+                ));
+            }
         }
         Ok(())
     }
@@ -177,8 +188,18 @@ impl MobiHeader {
         put_u32(&mut bytes, 0xc0, self.flis_record);
         put_u32(&mut bytes, 0xc4, self.flis_count);
         put_u16(&mut bytes, 0xe2, self.extra_data_flags);
-        put_u32(&mut bytes, 0xb0, self.fdst_record);
-        put_u32(&mut bytes, 0xb4, self.fdst_flow_count);
+        if let Some((first_content, last_content)) = self.content_record_range {
+            // KF7 stores its first/last content record numbers as u16 values
+            // at whole-Record-0 offsets 0xc0/0xc2 (0xb0/0xb2 here, after
+            // the 16-byte PalmDOC prefix), followed by the conventional
+            // 0x00000001 at whole-Record-0 offset 0xc4.
+            put_u16(&mut bytes, 0xb0, first_content);
+            put_u16(&mut bytes, 0xb2, last_content);
+            put_u32(&mut bytes, 0xb4, 1);
+        } else {
+            put_u32(&mut bytes, 0xb0, self.fdst_record);
+            put_u32(&mut bytes, 0xb4, self.fdst_flow_count);
+        }
         put_u32(&mut bytes, 0xe8, self.index_record);
         put_u32(&mut bytes, 0xe4, self.ncx_record);
         put_u32(&mut bytes, 0xec, self.skel_record);

@@ -1,13 +1,13 @@
 [package]
-name = "aozoraepub3-to-azw3"
-version = "0.2.0"
+name = "epub3-kindle"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
-description = "A Rust library and CLI for converting AozoraEpub3 EPUB files to KF8-only AZW3"
+description = "A Rust library and CLI for converting KindleGen-compatible EPUB 3 publications to Kindle KF8-only AZW3 or canonical Dual MOBI"
 license = "MIT"
-repository = "https://github.com/cbz-tools/AozoraEpub3-to-azw3"
+repository = "https://github.com/cbz-tools/Epub3-Kindle"
 readme = "README.md"
-keywords = ["epub", "azw3", "kindle", "aozora", "japanese"]
+keywords = ["epub", "kindle", "azw3", "mobi", "ebook"]
 categories = ["command-line-utilities", "encoding", "multimedia::encoding"]
 include = [
     "Cargo.toml",
@@ -23,12 +23,12 @@ include = [
 ]
 
 [lib]
-name = "aozoraepub3_to_azw3"
+name = "epub3_kindle"
 path = "src/lib.rs"
 
 [[bin]]
-name = "AozoraEpub3-to-azw3"
-path = "src/bin/AozoraEpub3-to-azw3.rs"
+name = "epub3-kindle"
+path = "src/bin/epub3-kindle.rs"
 required-features = ["cli"]
 
 [features]
@@ -36,9 +36,11 @@ default = ["cli"]
 cli = []
 
 [dependencies]
+flate2 = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 quick-xml = "0.37"
 thiserror = "2"
+unicode-normalization = "0.1"
 zip = "2.2"
 
 [build-dependencies]

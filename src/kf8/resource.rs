@@ -5,6 +5,10 @@
 //! representation lowering belongs to `kindle::cover`. EXTH 201/202 offsets are
 //! relative to First Image, so zero is valid when the first image is the target.
 
+use std::io::Write;
+
+use flate2::{Compression, write::ZlibEncoder};
+
 use crate::{error::Result, kindle::KindleResource};
 
 #[derive(Debug, Clone, Copy)]
@@ -137,6 +141,39 @@ pub(crate) fn is_font_resource(resource: &KindleResource) -> bool {
     ]
     .iter()
     .any(|media_type| resource.media_type.eq_ignore_ascii_case(media_type))
+}
+
+pub(crate) fn serialize_font_resource(data: Vec<u8>) -> Result<Vec<u8>> {
+    if !is_sfnt_font(&data) {
+        return Ok(data);
+    }
+    let uncompressed_length = u32::try_from(data.len())
+        .map_err(|_| crate::error::Error::Output("font length exceeds u32".to_owned()))?;
+    let mut compressed = Vec::new();
+    let mut encoder = ZlibEncoder::new(&mut compressed, Compression::best());
+    encoder.write_all(&data).map_err(|error| {
+        crate::error::Error::Output(format!("FONT zlib compression failed: {error}"))
+    })?;
+    encoder.finish().map_err(|error| {
+        crate::error::Error::Output(format!("FONT zlib finalization failed: {error}"))
+    })?;
+
+    let mut container = Vec::with_capacity(24 + compressed.len());
+    container.extend_from_slice(b"FONT");
+    container.extend_from_slice(&uncompressed_length.to_be_bytes());
+    container.extend_from_slice(&1u32.to_be_bytes());
+    container.extend_from_slice(&24u32.to_be_bytes());
+    container.extend_from_slice(&0u32.to_be_bytes());
+    container.extend_from_slice(&0u32.to_be_bytes());
+    container.extend_from_slice(&compressed);
+    Ok(container)
+}
+
+fn is_sfnt_font(data: &[u8]) -> bool {
+    matches!(
+        data.get(..4),
+        Some(b"OTTO") | Some(b"true") | Some(b"ttcf") | Some([0, 1, 0, 0])
+    )
 }
 
 pub(crate) fn is_binary_resource(resource: &KindleResource) -> bool {

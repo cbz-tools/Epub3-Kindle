@@ -4,39 +4,29 @@
 //! and coordinate semantics; this module coordinates their order and combines
 //! their results without redefining those algorithms.
 
-use super::css_flow::{
-    CssResourceIndex, ResourceIndex, SectionIndex, css_resource_base_href,
-    referenced_css_resources, rewrite_css_assets,
-};
-use super::div::Div;
+use super::builder_indexes::{Indexes, build_indexes, build_text_records};
+use super::builder_prepare::{PreparedContent, prepare_content};
+use super::css_flow::{css_resource_base_href, rewrite_css_assets};
 use super::exth::ExthHeader;
 use super::fcis::{encode_eof, encode_fcis};
 use super::fdst::Fdst;
 use super::flis::encode_flis;
-use super::format::{to_base32, to_base32_fixed};
+use super::format::to_base32;
 use super::fragment::{Fragment, FragmentEntry};
-use super::guide::Guide;
 use super::mobi_header::MobiHeader;
-use super::ncx::Ncx;
 use super::palmdoc::PalmDocHeader;
-use super::position::{AnchorIndex, PositionMap, assign_aids};
-use super::rawml::{
-    PendingInternalLink, SectionParts, generated_layout_css, lower_pre_paginated_section,
-    materialize_internal_links, rewrite_internal_links, rewrite_layout_class_for_document,
-    rewrite_layout_fallback_link, rewrite_projected_attributes,
-    rewrite_stylesheet_links_with_references, section_has_explicit_layout, split_section_parts,
-};
+use super::position::PositionMap;
+use super::rawml::{SectionParts, materialize_internal_links, split_section_parts};
 use super::resc::encode as encode_resc;
 use super::resource::{
-    BinaryResourceGeometry, is_binary_resource, is_css_resource, is_text_resource,
+    BinaryResourceGeometry, is_binary_resource, is_css_resource, is_font_resource,
+    is_text_resource, serialize_font_resource,
 };
-use super::skel::{Skel, SkelEntry};
-use super::text::{PalmDocCompressor, TextRecord};
+use super::text::PalmDocCompressor;
 use crate::error::Result;
 use crate::kindle::{
-    KindleBook, KindleLayoutSemantic, KindlePageProgression as PageProgression, KindleResource,
-    KindleSection, KindleWritingMode as WritingMode, generate_library_thumbnail,
-    prepare_cover_resource,
+    KindleBook, KindlePageProgression as PageProgression, KindleResource, KindleSection,
+    KindleWritingMode as WritingMode, prepare_cover_resource,
 };
 
 #[derive(Debug)]
@@ -50,67 +40,22 @@ pub(crate) struct Kf8Book {
     pub mobi: MobiHeader,
     pub exth: ExthHeader,
     pub title: Option<String>,
+    pub resource_record_count: u32,
     pub resc_record: u32,
     pub records: Vec<Kf8Record>,
 }
 
 pub(crate) struct Kf8Builder;
 
-struct PreparedContent<'a> {
-    sections: Vec<KindleSection>,
-    resource_index: ResourceIndex<'a>,
-    css_resources: CssResourceIndex<'a>,
-    section_index: SectionIndex,
-    page_flows: Vec<Vec<u8>>,
-    pending_links: Vec<Vec<PendingInternalLink>>,
-    uses_generated_layout: bool,
-    library_thumbnail: Option<Vec<u8>>,
-}
-
-struct TextGeometry {
-    sections: Vec<KindleSection>,
-    section_parts: Vec<SectionParts>,
-    position_map: PositionMap,
-    css_flows: Vec<Vec<u8>>,
-    css_flow_lengths: Vec<usize>,
-    page_flows: Vec<Vec<u8>>,
-    rawml_length: usize,
-    library_thumbnail: Option<Vec<u8>>,
-}
-
-struct TextData {
-    sections: Vec<KindleSection>,
-    skel: Skel,
-    position_map: PositionMap,
-    text_records: Vec<TextRecord>,
-    text_length_u32: u32,
-    text_record_count: usize,
-    xhtml_length_u32: u32,
-    css_flow_lengths: Vec<usize>,
-    page_flow_lengths: Vec<usize>,
-    library_thumbnail: Option<Vec<u8>>,
-}
-
-struct Indexes {
-    resc_sections: Vec<KindleSection>,
-    position_map: PositionMap,
-    text_records: Vec<TextRecord>,
-    indexing_tbs: Vec<Vec<u8>>,
-    text_length_u32: u32,
-    text_record_count: usize,
-    skel_main: Vec<u8>,
-    skel_details: Vec<Vec<u8>>,
-    fragment_main: Vec<u8>,
-    fragment_details: Vec<Vec<u8>>,
-    fragment_ctoc: Vec<Vec<u8>>,
-    guide_main: Vec<u8>,
-    guide_details: Vec<Vec<u8>>,
-    guide_ctoc: Vec<Vec<u8>>,
-    ncx_main: Vec<u8>,
-    ncx_details: Vec<Vec<u8>>,
-    ncx_ctoc: Vec<Vec<u8>>,
-    fdst: Fdst,
-    library_thumbnail: Option<Vec<u8>>,
+pub(super) struct TextGeometry {
+    pub(super) sections: Vec<KindleSection>,
+    pub(super) section_parts: Vec<SectionParts>,
+    pub(super) position_map: PositionMap,
+    pub(super) css_flows: Vec<Vec<u8>>,
+    pub(super) css_flow_lengths: Vec<usize>,
+    pub(super) page_flows: Vec<Vec<u8>>,
+    pub(super) rawml_length: usize,
+    pub(super) library_thumbnail: Option<Vec<u8>>,
 }
 
 struct PhysicalLayout {
@@ -146,7 +91,7 @@ impl Kf8Builder {
             library_thumbnail,
             cover_resource_id.as_deref(),
         )?;
-        let geometry = build_geometry(&book, prepared)?;
+        let geometry = build_geometry(prepared)?;
         book.resources = resources;
         let text = build_text_records(geometry)?;
         let indexes = build_indexes(&book, text)?;
@@ -156,207 +101,10 @@ impl Kf8Builder {
 }
 
 fn prepare_cover(book: &KindleBook, resources: &mut [KindleResource]) -> Result<Option<Vec<u8>>> {
-    let library_thumbnail = book
-        .metadata
-        .cover_resource_id
-        .as_deref()
-        .and_then(|cover_id| resources.iter().find(|resource| resource.id == cover_id))
-        .and_then(generate_library_thumbnail);
-    prepare_cover_resource(resources, book.metadata.cover_resource_id.as_deref())?;
-    Ok(library_thumbnail)
+    prepare_cover_resource(resources, book.metadata.cover_resource_id.as_deref())
 }
 
-fn prepare_content<'a>(
-    sections: &mut Vec<KindleSection>,
-    resources: &'a [KindleResource],
-    library_thumbnail: Option<Vec<u8>>,
-    cover_resource_id: Option<&str>,
-) -> Result<PreparedContent<'a>> {
-    let (resource_index, section_lookup, css_resources, layout_flow_number) =
-        classify_content(sections, resources);
-    let (sections, uses_generated_layout) = project_style_and_resources(
-        sections,
-        &resource_index,
-        &css_resources,
-        layout_flow_number,
-        cover_resource_id,
-    )?;
-    let (mut sections, page_flows) =
-        normalize_structural_content(sections, &css_resources, uses_generated_layout)?;
-    let anchor_indices = assign_positioning_metadata(&mut sections)?;
-    let pending_links = prepare_link_materialization(
-        &mut sections,
-        &section_lookup,
-        &anchor_indices,
-        &css_resources,
-    )?;
-    Ok(PreparedContent {
-        sections,
-        resource_index,
-        css_resources,
-        section_index: section_lookup,
-        page_flows,
-        pending_links,
-        uses_generated_layout,
-        library_thumbnail,
-    })
-}
-
-fn classify_content<'a>(
-    sections: &[KindleSection],
-    resources: &'a [KindleResource],
-) -> (
-    ResourceIndex<'a>,
-    SectionIndex,
-    super::css_flow::CssResourceIndex<'a>,
-    Option<u32>,
-) {
-    let resource_index = ResourceIndex::new(resources);
-    let section_lookup = SectionIndex::new(sections);
-    let css_resources = referenced_css_resources(sections, &resource_index, &section_lookup);
-    let layout_flow_number = u32::try_from(css_resources.len())
-        .ok()
-        .and_then(|count| count.checked_add(1));
-    (
-        resource_index,
-        section_lookup,
-        css_resources,
-        layout_flow_number,
-    )
-}
-
-fn project_style_and_resources(
-    sections: &mut Vec<KindleSection>,
-    resource_index: &ResourceIndex<'_>,
-    css_resources: &super::css_flow::CssResourceIndex<'_>,
-    layout_flow_number: Option<u32>,
-    cover_resource_id: Option<&str>,
-) -> Result<(Vec<KindleSection>, bool)> {
-    let mut projected = Vec::with_capacity(sections.len());
-    let mut uses_generated_layout = false;
-    for (index, section) in std::mem::take(sections).into_iter().enumerate() {
-        let has_explicit_layout = section_has_explicit_layout(&section, resource_index);
-        let layout_rewrite =
-            rewrite_layout_class_for_document(section.source_xhtml, index, has_explicit_layout);
-        uses_generated_layout |= layout_rewrite.uses_generated_layout;
-        let source = layout_rewrite.source;
-        let source = rewrite_stylesheet_links_with_references(
-            source,
-            &section.href,
-            css_resources,
-            Some(&section.referenced_styles),
-        );
-        let source = if layout_rewrite.uses_generated_layout {
-            if let Some(flow_number) = layout_flow_number {
-                rewrite_layout_fallback_link(source, flow_number)
-            } else {
-                source
-            }
-        } else {
-            source
-        };
-        let source =
-            rewrite_projected_attributes(source, &section.href, cover_resource_id, resource_index)?;
-        projected.push(KindleSection {
-            id: section.id,
-            href: section.href,
-            source_xhtml: source,
-            referenced_styles: section.referenced_styles,
-            linear: section.linear,
-            layout: section.layout,
-            rendition: section.rendition,
-            source_properties: section.source_properties,
-            source_spine_index: section.source_spine_index,
-        });
-    }
-    Ok((projected, uses_generated_layout))
-}
-
-fn normalize_structural_content(
-    mut sections: Vec<KindleSection>,
-    css_resources: &super::css_flow::CssResourceIndex<'_>,
-    uses_generated_layout: bool,
-) -> Result<(Vec<KindleSection>, Vec<Vec<u8>>)> {
-    for section in &mut sections {
-        let source = std::mem::take(&mut section.source_xhtml);
-        section.source_xhtml = super::rawml::materialize_ordered_list_values(source)?;
-    }
-    let page_flow_start = css_resources
-        .len()
-        .checked_add(usize::from(uses_generated_layout))
-        .and_then(|count| count.checked_add(1))
-        .and_then(|count| u32::try_from(count).ok())
-        .ok_or_else(|| crate::error::Error::Output("page flow number overflow".to_owned()))?;
-    let mut page_flows = Vec::new();
-    for section in &mut sections {
-        if section.layout != KindleLayoutSemantic::PrePaginated {
-            continue;
-        }
-        let flow_number = page_flow_start
-            .checked_add(u32::try_from(page_flows.len()).map_err(|_| {
-                crate::error::Error::Output("page flow count exceeds u32".to_owned())
-            })?)
-            .ok_or_else(|| crate::error::Error::Output("page flow number overflow".to_owned()))?;
-        let flow_reference = format!(
-            "kindle:flow:{}?mime=image/svg+xml",
-            to_base32_fixed(flow_number, 4)?
-        );
-        let css_reference = section.referenced_styles.iter().find_map(|style_href| {
-            super::css_flow::css_flow_number(&section.href, style_href, css_resources)
-                .map(super::css_flow::stylesheet_flow_reference)
-        });
-        let Some((source_xhtml, page_flow)) = lower_pre_paginated_section(
-            &section.source_xhtml,
-            &flow_reference,
-            css_reference.as_deref(),
-        ) else {
-            return Err(crate::error::Error::Output(format!(
-                "pre-paginated section {} has no page presentation",
-                section.href
-            )));
-        };
-        section.source_xhtml = source_xhtml;
-        page_flows.push(page_flow);
-    }
-    Ok((sections, page_flows))
-}
-
-fn assign_positioning_metadata(sections: &mut [KindleSection]) -> Result<Vec<AnchorIndex>> {
-    let mut next_aid = 0u32;
-    let mut anchor_indices = Vec::with_capacity(sections.len());
-    for section in &mut *sections {
-        let source = std::mem::take(&mut section.source_xhtml);
-        let assignment = assign_aids(source, &mut next_aid)?;
-        section.source_xhtml = assignment.xhtml;
-        anchor_indices.push(assignment.anchors);
-    }
-    Ok(anchor_indices)
-}
-
-fn prepare_link_materialization(
-    sections: &mut [KindleSection],
-    section_lookup: &SectionIndex,
-    anchor_indices: &[AnchorIndex],
-    css_resources: &super::css_flow::CssResourceIndex<'_>,
-) -> Result<Vec<Vec<PendingInternalLink>>> {
-    let mut pending_links = Vec::with_capacity(sections.len());
-    for (section_number, section) in sections.iter_mut().enumerate() {
-        let source = std::mem::take(&mut section.source_xhtml);
-        let (source, links) = rewrite_internal_links(
-            source,
-            &section.href,
-            section_lookup,
-            section_number,
-            anchor_indices,
-            css_resources,
-        )?;
-        section.source_xhtml = source;
-        pending_links.push(links);
-    }
-    Ok(pending_links)
-}
-
-fn build_geometry(book: &KindleBook, prepared: PreparedContent<'_>) -> Result<TextGeometry> {
+fn build_geometry(prepared: PreparedContent<'_>) -> Result<TextGeometry> {
     let PreparedContent {
         sections,
         resource_index,
@@ -364,7 +112,6 @@ fn build_geometry(book: &KindleBook, prepared: PreparedContent<'_>) -> Result<Te
         section_index,
         page_flows,
         pending_links,
-        uses_generated_layout,
         library_thumbnail,
     } = prepared;
     let mut section_parts = sections
@@ -380,7 +127,7 @@ fn build_geometry(book: &KindleBook, prepared: PreparedContent<'_>) -> Result<Te
         &mut section_parts,
     )?;
     drop(pending_links);
-    let mut css_flows = Vec::with_capacity(css_resources.len() + 1);
+    let mut css_flows = Vec::with_capacity(css_resources.len());
     for &resource in &css_resources.resources {
         let css_base_href = css_resource_base_href(&section_index, resource);
         css_flows.push(rewrite_css_assets(
@@ -389,9 +136,6 @@ fn build_geometry(book: &KindleBook, prepared: PreparedContent<'_>) -> Result<Te
             &resource_index,
             &css_resources,
         ));
-    }
-    if uses_generated_layout {
-        css_flows.push(generated_layout_css(book.layout).into_bytes());
     }
     let css_flow_lengths = css_flows.iter().map(Vec::len).collect::<Vec<_>>();
     let rawml_length = section_parts
@@ -553,9 +297,12 @@ fn assemble_records(
         if is_text_resource(&resource) || is_css_resource(&resource) {
             continue;
         }
-        records.push(Kf8Record {
-            data: resource.data,
-        });
+        let data = if is_font_resource(&resource) {
+            serialize_font_resource(resource.data)?
+        } else {
+            resource.data
+        };
+        records.push(Kf8Record { data });
     }
     if let Some(thumbnail) = library_thumbnail {
         records.push(Kf8Record { data: thumbnail });
@@ -656,6 +403,16 @@ fn build_record0(book: KindleBook, layout: PhysicalLayout) -> Result<Kf8Book> {
     if let Some(value) = &book.metadata.publisher_file_as {
         exth.push_text(522, value);
     }
+    // Preserve the source Package Document identifier separately from the
+    // publication date. EXTH 112 is the MOBI source identifier field and
+    // EXTH 106 carries EPUB dc:date; dcterms:modified remains in the semantic
+    // IR for consumers that need last-modified metadata.
+    if let Some(value) = &book.metadata.identifier {
+        exth.push_text(112, value);
+    }
+    if let Some(value) = &book.metadata.publication_date {
+        exth.push_text(106, value);
+    }
     if let Some(value) = &book.metadata.language {
         exth.push_text(524, value);
     }
@@ -752,228 +509,9 @@ fn build_record0(book: KindleBook, layout: PhysicalLayout) -> Result<Kf8Book> {
         mobi,
         exth,
         title,
+        resource_record_count: geometry.count,
         resc_record,
         records,
-    })
-}
-
-fn build_text_records(geometry: TextGeometry) -> Result<TextData> {
-    let TextGeometry {
-        sections,
-        section_parts,
-        position_map,
-        css_flows,
-        css_flow_lengths,
-        page_flows,
-        rawml_length,
-        library_thumbnail,
-    } = geometry;
-    let mut stream_chunks = Vec::with_capacity(
-        section_parts
-            .iter()
-            .map(|parts| parts.fragments.len() + 1)
-            .sum::<usize>()
-            + css_flows.len()
-            + page_flows.len(),
-    );
-    for parts in &section_parts {
-        stream_chunks.push(parts.skeleton.as_slice());
-        stream_chunks.extend(parts.fragments.iter().map(Vec::as_slice));
-    }
-    stream_chunks.extend(css_flows.iter().map(Vec::as_slice));
-    stream_chunks.extend(page_flows.iter().map(Vec::as_slice));
-    let text_records = TextRecord::split_chunks(&stream_chunks);
-    drop(stream_chunks);
-    drop(css_flows);
-    let page_flow_lengths = page_flows.iter().map(Vec::len).collect::<Vec<_>>();
-    drop(page_flows);
-    let expected_record_count = rawml_length
-        .checked_add(4096 - 1)
-        .ok_or_else(|| crate::error::Error::Output("text length overflow".to_owned()))?
-        / 4096;
-    if text_records.len() != expected_record_count
-        || text_records
-            .iter()
-            .take(text_records.len().saturating_sub(1))
-            .any(|record| record.data.len() != 4096)
-    {
-        return Err(crate::error::Error::Output(
-            "PalmDOC text records do not match fixed 4096-byte coordinates".to_owned(),
-        ));
-    }
-    if text_records.len() > u16::MAX as usize {
-        return Err(crate::error::Error::Output(
-            "PalmDOC text record count exceeds u16".to_owned(),
-        ));
-    }
-    let mut skel_offset = 0u32;
-    let mut skel_entries = Vec::with_capacity(section_parts.len());
-    let mut xhtml_length = 0usize;
-    for parts in &section_parts {
-        let skel_start = skel_offset;
-        let skeleton_length = u32::try_from(parts.skeleton.len()).map_err(|_| {
-            crate::error::Error::Output("SKEL section length exceeds u32".to_owned())
-        })?;
-        let fragments_length = parts.fragments.iter().try_fold(0usize, |total, fragment| {
-            total
-                .checked_add(fragment.len())
-                .ok_or_else(|| crate::error::Error::Output("XHTML length overflow".to_owned()))
-        })?;
-        let fragments_length_u32 = u32::try_from(fragments_length)
-            .map_err(|_| crate::error::Error::Output("SKEL position overflow".to_owned()))?;
-        let section_length = parts
-            .skeleton
-            .len()
-            .checked_add(fragments_length)
-            .ok_or_else(|| crate::error::Error::Output("XHTML length overflow".to_owned()))?;
-        xhtml_length = xhtml_length
-            .checked_add(section_length)
-            .ok_or_else(|| crate::error::Error::Output("XHTML length overflow".to_owned()))?;
-        skel_offset = skel_offset
-            .checked_add(skeleton_length)
-            .and_then(|offset| offset.checked_add(fragments_length_u32))
-            .ok_or_else(|| crate::error::Error::Output("SKEL position overflow".to_owned()))?;
-        skel_entries.push(SkelEntry {
-            fragment_count: u32::try_from(parts.fragments.len()).map_err(|_| {
-                crate::error::Error::Output("SKEL fragment count exceeds u32".to_owned())
-            })?,
-            start: skel_start,
-            length: skeleton_length,
-        });
-    }
-    let skel = Skel {
-        entries: skel_entries,
-    };
-    drop(section_parts);
-    let text_length = text_records
-        .iter()
-        .map(|record| record.data.len())
-        .try_fold(0usize, |total, length| total.checked_add(length))
-        .ok_or_else(|| crate::error::Error::Output("text length overflow".to_owned()))?;
-    if text_length != rawml_length {
-        return Err(crate::error::Error::Output(
-            "PalmDOC text length does not match the logical stream".to_owned(),
-        ));
-    }
-    let xhtml_length_u32 = u32::try_from(xhtml_length)
-        .map_err(|_| crate::error::Error::Output("XHTML length exceeds u32".to_owned()))?;
-    let text_length_u32 = u32::try_from(text_length)
-        .map_err(|_| crate::error::Error::Output("text length exceeds u32".to_owned()))?;
-    let text_record_count = text_records.len();
-    Ok(TextData {
-        sections,
-        skel,
-        position_map,
-        text_records,
-        text_length_u32,
-        text_record_count,
-        xhtml_length_u32,
-        css_flow_lengths,
-        page_flow_lengths,
-        library_thumbnail,
-    })
-}
-
-fn build_indexes(book: &KindleBook, text: TextData) -> Result<Indexes> {
-    let TextData {
-        sections,
-        skel,
-        position_map,
-        text_records,
-        text_length_u32,
-        text_record_count,
-        xhtml_length_u32,
-        css_flow_lengths,
-        page_flow_lengths,
-        library_thumbnail,
-    } = text;
-    skel.validate()?;
-    let fragments = fragments_from_position_map(&position_map);
-    fragments.validate()?;
-    let div = Div::for_records(text_records.len());
-    div.validate(text_records.len())?;
-    let mut fdst_ranges = vec![(0, xhtml_length_u32)];
-    let mut flow_start = xhtml_length_u32;
-    for length in css_flow_lengths {
-        let length = u32::try_from(length)
-            .map_err(|_| crate::error::Error::Output("CSS flow length exceeds u32".to_owned()))?;
-        let flow_end = flow_start
-            .checked_add(length)
-            .ok_or_else(|| crate::error::Error::Output("CSS flow position overflow".to_owned()))?;
-        fdst_ranges.push((flow_start, flow_end));
-        flow_start = flow_end;
-    }
-    for length in page_flow_lengths {
-        let length = u32::try_from(length)
-            .map_err(|_| crate::error::Error::Output("page flow length exceeds u32".to_owned()))?;
-        let flow_end = flow_start
-            .checked_add(length)
-            .ok_or_else(|| crate::error::Error::Output("page flow position overflow".to_owned()))?;
-        fdst_ranges.push((flow_start, flow_end));
-        flow_start = flow_end;
-    }
-    let fdst = Fdst::from_ranges(&fdst_ranges);
-    fdst.validate(text_length_u32)?;
-    let (skel_main, skel_details) = skel
-        .encode_pair()
-        .map_err(|error| crate::error::Error::Output(format!("SKEL: {error}")))?;
-    let fragment_selectors = position_map
-        .fragments
-        .iter()
-        .map(|fragment| fragment.selector.clone())
-        .collect::<Vec<_>>();
-    let (fragment_main, fragment_details, fragment_ctoc) = fragments
-        .encode_pair_with_ctoc(&fragment_selectors)
-        .map_err(|error| {
-            crate::error::Error::Output(format!(
-                "FRAG ({} entries): {error}",
-                fragments.entries.len()
-            ))
-        })?;
-    let ncx = Ncx::from_navigation(&book.navigation);
-    let text_record_lengths = text_records
-        .iter()
-        .map(|record| record.data.len())
-        .collect::<Vec<_>>();
-    let (_, indexing_tbs) = ncx.indexing_tbs_with_position_map(
-        &position_map,
-        &sections,
-        &text_record_lengths,
-        Some(&book.navigation),
-    )?;
-    if indexing_tbs.len() != text_records.len() {
-        return Err(crate::error::Error::Output(
-            "TBS count does not match PalmDOC text record count".to_owned(),
-        ));
-    }
-    let (ncx_main, ncx_details, ncx_ctoc) = ncx
-        .encode_pair_with_position_map_and_navigation(&position_map, &sections, &book.navigation)
-        .map_err(|error| crate::error::Error::Output(format!("NCX: {error}")))?;
-    let guide =
-        Guide::from_positions(position_map.guide_positions(&book.landmarks, &book.navigation)?);
-    let (guide_main, guide_details, guide_ctoc) = guide
-        .encode_pair()
-        .map_err(|error| crate::error::Error::Output(format!("Guide: {error}")))?;
-    Ok(Indexes {
-        resc_sections: sections,
-        position_map,
-        text_records,
-        indexing_tbs,
-        text_length_u32,
-        text_record_count,
-        skel_main,
-        skel_details,
-        fragment_main,
-        fragment_details,
-        fragment_ctoc,
-        guide_main,
-        guide_details,
-        guide_ctoc,
-        ncx_main,
-        ncx_details,
-        ncx_ctoc,
-        fdst,
-        library_thumbnail,
     })
 }
 
@@ -994,14 +532,9 @@ fn page_progression_value(page_progression: PageProgression) -> &'static str {
 }
 
 fn language_code(language: &str) -> u32 {
-    let primary = language
-        .trim()
-        .to_ascii_lowercase()
-        .split(['-', '_'])
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    match primary.as_str() {
+    let mut subtags = language.trim().split(['-', '_']);
+    let primary = subtags.next().unwrap_or_default().to_ascii_lowercase();
+    let main = match primary.as_str() {
         "ja" | "jpn" => 0x11,
         "en" | "eng" => 0x09,
         "de" | "deu" | "ger" => 0x07,
@@ -1010,11 +543,24 @@ fn language_code(language: &str) -> u32 {
         "it" | "ita" => 0x10,
         "ko" | "kor" => 0x12,
         "zh" | "chi" | "zho" => 0x04,
-        _ => 0,
-    }
+        _ => return 0,
+    };
+    let dialect = subtags
+        .filter_map(|subtag| {
+            let subtag = subtag.to_ascii_lowercase();
+            match (primary.as_str(), subtag.as_str()) {
+                ("en" | "eng", "us") => Some(0x04),
+                ("zh" | "chi" | "zho", "cn") => Some(0x08),
+                ("zh" | "chi" | "zho", "tw") => Some(0x04),
+                _ => None,
+            }
+        })
+        .next()
+        .unwrap_or(0);
+    main | (dialect << 8)
 }
 
-fn fragments_from_position_map(position_map: &PositionMap) -> Fragment {
+pub(super) fn fragments_from_position_map(position_map: &PositionMap) -> Fragment {
     // PositionMap owns the canonical document-local payload-stream offset.
     // FRAG tag 6 uses it for `start`; insert_position remains the separate
     // SKEL/RawML insertion coordinate and must not be used to derive it.

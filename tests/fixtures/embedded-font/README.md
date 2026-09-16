@@ -1,7 +1,7 @@
 # E-12 Embedded Font fixture
 
 Purpose: exercise the AozoraEpub3 embedded-TTF path and the converter's KF8 FONT
-resource handling without adding this concern to the Sovereign Stars fixture.
+resource handling as a focused generic EPUB 3 compatibility fixture.
 
 ## Placement
 

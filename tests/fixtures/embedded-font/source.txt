@@ -1,5 +1,5 @@
 E-12 Embedded Font Fixture
-AozoraEpub3-to-azw3
+Epub3-Kindle
 
 ［＃改ページ］
 ［＃大見出し］E-12 Embedded Font［＃大見出し終わり］

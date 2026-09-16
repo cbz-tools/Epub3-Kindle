@@ -4,6 +4,10 @@ pub struct Metadata {
     pub creator: Option<String>,
     pub language: Option<String>,
     pub identifier: Option<String>,
+    /// EPUB `dc:date`, retained independently as the publication date.
+    pub publication_date: Option<String>,
+    /// EPUB `dcterms:modified`, retained independently as the last-modified value.
+    pub modified: Option<String>,
     pub publisher: Option<String>,
     pub description: Option<String>,
     pub cover: Option<String>,

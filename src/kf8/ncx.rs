@@ -242,17 +242,12 @@ impl Ncx {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let hierarchical = nodes.iter().any(|node| node.node.depth > 0);
-        let mut order = (0..nodes.len()).collect::<Vec<_>>();
-        if hierarchical {
-            order.sort_by_key(|&index| {
-                (
-                    nodes[index].node.depth,
-                    nodes[index].start,
-                    nodes[index].original_index,
-                )
-            });
-        }
+        // Preserve the source navigation traversal order.  A breadth/depth
+        // sort changes the semantic order of a nested TOC (parent, sibling,
+        // child) even though the hierarchy fields still look plausible.
+        // The source-order vector is already the order used by TBS and the
+        // source navigation tree, so only remap the hierarchy indexes below.
+        let order = (0..nodes.len()).collect::<Vec<_>>();
         let mut final_index = vec![0usize; nodes.len()];
         // Establish Kindle's final binary order before remapping semantic
         // parent/first_child/last_child references to final record indexes.

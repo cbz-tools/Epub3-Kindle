@@ -48,6 +48,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CssImportSpan {
+    pub(crate) statement_start: usize,
     pub(crate) wrapper_start: usize,
     pub(crate) wrapper_end: usize,
     pub(crate) target_start: usize,
@@ -61,6 +62,13 @@ pub(crate) fn css_import_targets(source: &str) -> Vec<String> {
         .map(|span| source[span.target_start..span.target_end].to_owned())
         .filter(|target| !is_external_reference(target))
         .collect()
+}
+
+pub(crate) fn is_remote_reference(target: &str) -> bool {
+    target.starts_with("//")
+        || (target.contains("://")
+            && !target.starts_with("data:")
+            && !target.starts_with("kindle:"))
 }
 
 pub(crate) fn css_import_spans(source: &str) -> Vec<CssImportSpan> {
@@ -93,6 +101,7 @@ fn parse_css_import_span(source: &str, start: usize) -> Option<CssImportSpan> {
     if css_function_at(source, cursor, "url") && source.as_bytes().get(cursor + 3) == Some(&b'(') {
         let url = parse_css_url_span(source, cursor)?;
         return Some(CssImportSpan {
+            statement_start: start - "@import".len(),
             wrapper_start: cursor,
             wrapper_end: url.close_end,
             target_start: url.target_start,
@@ -106,6 +115,7 @@ fn parse_css_import_span(source: &str, start: usize) -> Option<CssImportSpan> {
     }
     let quote_end = skip_css_string(source, cursor)?;
     Some(CssImportSpan {
+        statement_start: start - "@import".len(),
         wrapper_start: cursor,
         wrapper_end: quote_end,
         target_start: cursor + 1,

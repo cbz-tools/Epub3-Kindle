@@ -84,7 +84,7 @@ try {
 
     $currentStep++
     Write-Host "[$currentStep/$totalSteps] Verify Windows release executable and version metadata"
-    $exePath = Join-Path $repoRoot (Join-Path 'target' (Join-Path 'release' 'AozoraEpub3-to-azw3.exe'))
+    $exePath = Join-Path $repoRoot (Join-Path 'target' (Join-Path 'release' 'epub3-kindle.exe'))
     if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
         throw "Windows release executable not found: $exePath"
     }

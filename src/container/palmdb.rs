@@ -12,11 +12,16 @@ pub struct PalmDb {
     pub records: Vec<PalmDbRecord>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PalmDbEncodeOptions {
+    pub(crate) creation_time: u32,
+    pub(crate) modification_time: u32,
+}
+
 const PDB_HEADER_LEN: usize = 78;
 const PDB_RECORD_ENTRY_LEN: usize = 8;
 const PDB_NAME_MAX_LEN: usize = 31;
 const PDB_RECORD_TABLE_TERMINATOR_LEN: usize = 2;
-
 impl PalmDb {
     pub fn new(name: impl Into<String>, records: Vec<PalmDbRecord>) -> Self {
         Self {
@@ -61,8 +66,15 @@ impl PalmDb {
     }
 
     pub fn encode_checked(&self) -> crate::error::Result<Vec<u8>> {
+        self.encode_checked_with_options(PalmDbEncodeOptions::default())
+    }
+
+    pub(crate) fn encode_checked_with_options(
+        &self,
+        options: PalmDbEncodeOptions,
+    ) -> crate::error::Result<Vec<u8>> {
         self.validate()?;
-        Ok(self.encode_unchecked())
+        Ok(self.encode_unchecked_with_timestamps(options.creation_time, options.modification_time))
     }
 
     pub(crate) fn write_stream_checked<W: Write, I>(
@@ -76,8 +88,36 @@ impl PalmDb {
         I: IntoIterator,
         I::Item: AsRef<[u8]>,
     {
+        Self::write_stream_checked_with_options(
+            name,
+            record_lengths,
+            records,
+            writer,
+            path,
+            PalmDbEncodeOptions::default(),
+        )
+    }
+
+    pub(crate) fn write_stream_checked_with_options<W: Write, I>(
+        name: &str,
+        record_lengths: &[usize],
+        records: I,
+        writer: &mut W,
+        path: &str,
+        options: PalmDbEncodeOptions,
+    ) -> crate::error::Result<()>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<[u8]>,
+    {
         let offsets = record_offsets(record_lengths)?;
-        let header = make_header(name, &offsets, |_| 0);
+        let header = make_header(
+            name,
+            &offsets,
+            options.creation_time,
+            options.modification_time,
+            |_| 0,
+        );
         writer
             .write_all(&header)
             .map_err(|source| crate::error::Error::Io {
@@ -111,33 +151,101 @@ impl PalmDb {
         Ok(())
     }
 
-    fn encode_unchecked(&self) -> Vec<u8> {
+    pub(crate) fn write_result_stream_checked_with_options<W: Write, I>(
+        name: &str,
+        record_lengths: &[usize],
+        records: I,
+        writer: &mut W,
+        path: &str,
+        options: PalmDbEncodeOptions,
+    ) -> crate::error::Result<()>
+    where
+        I: IntoIterator<Item = crate::error::Result<Vec<u8>>>,
+    {
+        let offsets = record_offsets(record_lengths)?;
+        let header = make_header(
+            name,
+            &offsets,
+            options.creation_time,
+            options.modification_time,
+            |_| 0,
+        );
+        writer
+            .write_all(&header)
+            .map_err(|source| crate::error::Error::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+        let mut record_index = 0;
+        for record in records {
+            let data = record?;
+            let expected_length = record_lengths.get(record_index).ok_or_else(|| {
+                crate::error::Error::Output("PalmDB record count mismatch".to_owned())
+            })?;
+            if data.len() != *expected_length {
+                return Err(crate::error::Error::Output(
+                    "PalmDB record length mismatch".to_owned(),
+                ));
+            }
+            writer
+                .write_all(&data)
+                .map_err(|source| crate::error::Error::Io {
+                    path: path.to_owned(),
+                    source,
+                })?;
+            record_index += 1;
+        }
+        if record_index != record_lengths.len() {
+            return Err(crate::error::Error::Output(
+                "PalmDB record count mismatch".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn encode_unchecked_with_timestamps(
+        &self,
+        creation_time: u32,
+        modification_time: u32,
+    ) -> Vec<u8> {
         let record_table_len = self.records.len() * PDB_RECORD_ENTRY_LEN;
         let first_record_offset =
             PDB_HEADER_LEN + record_table_len + PDB_RECORD_TABLE_TERMINATOR_LEN;
         let mut bytes = Vec::with_capacity(first_record_offset);
-        self.write_unchecked(&mut bytes, "memory")
+        self.write_unchecked(&mut bytes, "memory", creation_time, modification_time)
             .expect("writing to Vec cannot fail");
         bytes
     }
 
-    fn write_unchecked<W: Write>(&self, writer: &mut W, path: &str) -> crate::error::Result<()> {
+    fn write_unchecked<W: Write>(
+        &self,
+        writer: &mut W,
+        path: &str,
+        creation_time: u32,
+        modification_time: u32,
+    ) -> crate::error::Result<()> {
         let record_lengths = self
             .records
             .iter()
             .map(|record| record.data.len())
             .collect::<Vec<_>>();
         let offsets = record_offsets(&record_lengths)?;
-        let header = make_header(&self.name, &offsets, |index| {
-            // Record 0 keeps canonical zero attributes. Later attributes are
-            // preserved for resource/record flags; this writer leaves resource
-            // records unflagged because their role is carried by MOBI.
-            if index == 0 {
-                0
-            } else {
-                self.records[index].attributes
-            }
-        });
+        let header = make_header(
+            &self.name,
+            &offsets,
+            creation_time,
+            modification_time,
+            |index| {
+                // Record 0 keeps canonical zero attributes. Later attributes are
+                // preserved for resource/record flags; this writer leaves resource
+                // records unflagged because their role is carried by MOBI.
+                if index == 0 {
+                    0
+                } else {
+                    self.records[index].attributes
+                }
+            },
+        );
         writer
             .write_all(&header)
             .map_err(|source| crate::error::Error::Io {
@@ -191,7 +299,13 @@ fn record_offsets(record_lengths: &[usize]) -> crate::error::Result<Vec<usize>> 
     Ok(offsets)
 }
 
-fn make_header(name: &str, offsets: &[usize], attributes: impl Fn(usize) -> u8) -> Vec<u8> {
+fn make_header(
+    name: &str,
+    offsets: &[usize],
+    creation_time: u32,
+    modification_time: u32,
+    attributes: impl Fn(usize) -> u8,
+) -> Vec<u8> {
     let record_table_len = offsets.len() * PDB_RECORD_ENTRY_LEN;
     let first_record_offset = PDB_HEADER_LEN + record_table_len + PDB_RECORD_TABLE_TERMINATOR_LEN;
     let mut header = vec![0u8; first_record_offset];
@@ -202,6 +316,8 @@ fn make_header(name: &str, offsets: &[usize], attributes: impl Fn(usize) -> u8) 
     header[..name_len].copy_from_slice(&name.as_bytes()[..name_len]);
     put_u16(&mut header, 32, 0);
     put_u16(&mut header, 34, 0);
+    put_u32(&mut header, 36, creation_time);
+    put_u32(&mut header, 40, modification_time);
     header[60..64].copy_from_slice(b"BOOK");
     header[64..68].copy_from_slice(b"MOBI");
     let unique_id_seed = if offsets.is_empty() {

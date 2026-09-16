@@ -91,7 +91,7 @@ jobs:
         shell: pwsh
         run: |
           $expectedVersion = '${{ needs.verify.outputs.version }}'
-          $exePath = Join-Path $env:GITHUB_WORKSPACE 'target\release\AozoraEpub3-to-azw3.exe'
+          $exePath = Join-Path $env:GITHUB_WORKSPACE 'target\release\epub3-kindle.exe'
           if (-not (Test-Path -LiteralPath $exePath)) {
               throw "Windows release executable not found: $exePath"
           }
@@ -107,7 +107,7 @@ jobs:
         shell: pwsh
         run: |
           $version = '${{ needs.verify.outputs.version }}'
-          $packageName = "aozoraepub3-to-azw3-v$version-windows-x64"
+          $packageName = "epub3-kindle-v$version-windows-x64"
           $outputDir = Join-Path $env:GITHUB_WORKSPACE 'target\release-package'
           $stagingDir = Join-Path $env:RUNNER_TEMP $packageName
           New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
@@ -115,7 +115,7 @@ jobs:
               Remove-Item -LiteralPath $stagingDir -Recurse -Force
           }
           New-Item -ItemType Directory -Path $stagingDir | Out-Null
-          Copy-Item 'target\release\AozoraEpub3-to-azw3.exe' $stagingDir
+          Copy-Item 'target\release\epub3-kindle.exe' $stagingDir
           Copy-Item 'README.md', 'README.ja.md', 'LICENSE', 'CHANGELOG.md', 'THIRDPARTY_LICENSES.md' $stagingDir
           $archivePath = Join-Path $outputDir "$packageName.zip"
           Compress-Archive -Path (Join-Path $stagingDir '*') -DestinationPath $archivePath -Force
@@ -124,7 +124,7 @@ jobs:
           $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
           try {
               $expected = @(
-                  'AozoraEpub3-to-azw3.exe',
+                  'epub3-kindle.exe',
                   'CHANGELOG.md',
                   'LICENSE',
                   'README.ja.md',
@@ -193,17 +193,17 @@ jobs:
         run: |
           set -euo pipefail
           version='${{ needs.verify.outputs.version }}'
-          package_name="aozoraepub3-to-azw3-v${version}-${{ matrix.suffix }}"
+          package_name="epub3-kindle-v${version}-${{ matrix.suffix }}"
           output_dir="${GITHUB_WORKSPACE}/target/release-package"
           staging_dir="${RUNNER_TEMP}/${package_name}"
           rm -rf "${staging_dir}" "${output_dir}"
           mkdir -p "${output_dir}" "${staging_dir}"
-          cp target/release/AozoraEpub3-to-azw3 "${staging_dir}/"
+          cp target/release/epub3-kindle "${staging_dir}/"
           cp README.md README.ja.md LICENSE CHANGELOG.md THIRDPARTY_LICENSES.md "${staging_dir}/"
           archive_path="${output_dir}/${package_name}.tar.gz"
-          tar -czf "${archive_path}" -C "${staging_dir}" AozoraEpub3-to-azw3 CHANGELOG.md LICENSE README.ja.md README.md THIRDPARTY_LICENSES.md
+          tar -czf "${archive_path}" -C "${staging_dir}" epub3-kindle CHANGELOG.md LICENSE README.ja.md README.md THIRDPARTY_LICENSES.md
 
-          expected="$(printf '%s\n' AozoraEpub3-to-azw3 CHANGELOG.md LICENSE README.ja.md README.md THIRDPARTY_LICENSES.md | sort)"
+          expected="$(printf '%s\n' epub3-kindle CHANGELOG.md LICENSE README.ja.md README.md THIRDPARTY_LICENSES.md | sort)"
           actual="$(tar -tzf "${archive_path}" | sort)"
           if [[ "${actual}" != "${expected}" ]]; then
             echo "::error::${package_name} contents differ from allowlist"
@@ -237,9 +237,9 @@ jobs:
           set -euo pipefail
           version='${{ needs.verify.outputs.version }}'
           expected="$(printf '%s\n' \
-            "aozoraepub3-to-azw3-v${version}-windows-x64.zip" \
-            "aozoraepub3-to-azw3-v${version}-linux-x64.tar.gz" \
-            "aozoraepub3-to-azw3-v${version}-macos-arm64.tar.gz" | sort)"
+            "epub3-kindle-v${version}-windows-x64.zip" \
+            "epub3-kindle-v${version}-linux-x64.tar.gz" \
+            "epub3-kindle-v${version}-macos-arm64.tar.gz" | sort)"
           actual="$(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)"
           if [[ "${actual}" != "${expected}" ]]; then
             echo "::error::release asset allowlist mismatch"

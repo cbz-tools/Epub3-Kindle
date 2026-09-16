@@ -1,10 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
+use super::data_uri::materialize_data_images;
+use super::image::convert_large_image_to_jpeg;
 use super::{
-    KindleBook, KindleLandmark, KindleLayout, KindleNavigationItem, KindleResource, KindleSection,
+    KINDLE_LD_IMAGE_MAX_BYTES, KindleBook, KindleLandmark, KindleLayout, KindleNavigationItem,
+    KindleResource, KindleSection,
     ir::{KindleLayoutSemantic, KindleMetadata},
 };
-use crate::book::{Book, Layout, NavigationItem, NavigationLandmark, plain_display_text};
+use crate::book::{
+    Book, ContentDocument, Layout, NavigationItem, NavigationLandmark, ReadingOrderItem, Resource,
+    plain_display_text,
+};
 use crate::xhtml::scan::{find_ascii_case_insensitive, html_tag_end, html_tag_name_range};
 
 const COVER_LANDMARK_MARKER: &str = "kindle:cover-landmark";
@@ -57,14 +63,61 @@ pub(crate) fn normalize(book: Book) -> KindleBook {
         keep_comic_cover_page,
         omitted_cover_hrefs,
     } = prepare_cover_phase(&book);
-    let mut content_by_id = book
-        .content
+    let mut sections = normalize_sections(
+        book.content,
+        book.reading_order.items,
+        &cover_hrefs,
+        &cover_ids,
+        keep_comic_cover_page,
+    );
+    let (navigation, toc_href) = normalize_navigation(
+        book.navigation.items,
+        book.navigation.page_list.clone(),
+        &book.resources.items,
+        &mut sections,
+        &cover_hrefs,
+    );
+    let landmarks = normalize_landmarks(
+        book.navigation.landmarks,
+        &sections,
+        toc_href.as_deref(),
+        &omitted_cover_hrefs,
+    );
+    let is_comic = book
+        .metadata
+        .book_type
+        .as_deref()
+        .is_some_and(|book_type| book_type.trim().eq_ignore_ascii_case("comic"));
+    let mut resources = normalize_resources(book.resources.items, is_comic);
+    materialize_data_images(&mut sections, &mut resources);
+    project_css_resources(&mut resources);
+    let metadata = normalize_metadata(book.metadata, book.rendition);
+    KindleBook {
+        metadata,
+        layout: KindleLayout {
+            writing_mode: book.layout.writing_mode,
+            page_progression: book.layout.page_progression,
+            direction: book.layout.direction,
+        },
+        sections,
+        navigation,
+        landmarks,
+        resources,
+    }
+}
+
+fn normalize_sections(
+    content: Vec<ContentDocument>,
+    reading_items: Vec<ReadingOrderItem>,
+    cover_hrefs: &HashSet<String>,
+    cover_ids: &HashSet<String>,
+    keep_comic_cover_page: bool,
+) -> Vec<KindleSection> {
+    let mut content_by_id = content
         .into_iter()
         .map(|content| (content.id.clone(), content))
         .collect::<HashMap<_, _>>();
-    let mut sections: Vec<KindleSection> = book
-        .reading_order
-        .items
+    reading_items
         .into_iter()
         .filter_map(|item| {
             let content = content_by_id.remove(&item.id)?;
@@ -81,7 +134,7 @@ pub(crate) fn normalize(book: Book) -> KindleBook {
             let source_xhtml = if cover_hrefs.is_empty() {
                 content.source_xhtml
             } else {
-                match neutralize_cover_links(&content.source_xhtml, &item.href, &cover_hrefs) {
+                match neutralize_cover_links(&content.source_xhtml, &item.href, cover_hrefs) {
                     Some(source) => source,
                     None => content.source_xhtml,
                 }
@@ -98,22 +151,28 @@ pub(crate) fn normalize(book: Book) -> KindleBook {
                 source_spine_index: Some(content.source_spine_index),
             })
         })
-        .collect();
-    let navigation = prune_navigation(book.navigation.items, &cover_hrefs)
+        .collect()
+}
+
+fn normalize_navigation(
+    items: Vec<NavigationItem>,
+    page_list: Vec<NavigationItem>,
+    resources: &[Resource],
+    sections: &mut Vec<KindleSection>,
+    cover_hrefs: &HashSet<String>,
+) -> (Vec<KindleNavigationItem>, Option<String>) {
+    let navigation = prune_navigation(items, cover_hrefs)
         .into_iter()
         .map(KindleNavigationItem::from)
         .collect::<Vec<_>>();
-    let page_list = book
-        .navigation
-        .page_list
-        .clone()
+    let page_list = page_list
         .into_iter()
         .map(KindleNavigationItem::from)
         .collect::<Vec<_>>();
     // A manifest nav resource is a navigation source, not visible content, when
     // it is absent from the spine. When it is in the spine, preserve its source
     // position and linear semantics.
-    let navigation_resource = book.resources.items.iter().find(|resource| {
+    let navigation_resource = resources.iter().find(|resource| {
         (resource
             .media_type
             .eq_ignore_ascii_case("application/xhtml+xml")
@@ -132,7 +191,7 @@ pub(crate) fn normalize(book: Book) -> KindleBook {
     } else if navigation.is_empty() {
         None
     } else {
-        let href = synthetic_toc_href(&sections, &book.resources.items);
+        let href = synthetic_toc_href(sections, resources);
         sections.insert(
             0,
             KindleSection {
@@ -150,7 +209,7 @@ pub(crate) fn normalize(book: Book) -> KindleBook {
         Some(href)
     };
     if !page_list.is_empty() {
-        let href = synthetic_page_list_href(&sections, &book.resources.items);
+        let href = synthetic_page_list_href(sections, resources);
         let insert_at = usize::from(toc_href.is_some()).min(sections.len());
         sections.insert(
             insert_at,
@@ -167,18 +226,23 @@ pub(crate) fn normalize(book: Book) -> KindleBook {
             },
         );
     }
+    (navigation, toc_href)
+}
+
+fn normalize_landmarks(
+    source_landmarks: Vec<NavigationLandmark>,
+    sections: &[KindleSection],
+    toc_href: Option<&str>,
+    omitted_cover_hrefs: &HashSet<String>,
+) -> Vec<KindleLandmark> {
     let fallback_body_href = sections
         .iter()
         .find(|section| {
             section.linear
-                && toc_href
-                    .as_deref()
-                    .is_none_or(|toc| document_path(&section.href) != document_path(toc))
+                && toc_href.is_none_or(|toc| document_path(&section.href) != document_path(toc))
         })
         .map(|section| section.href.clone());
-    let mut landmarks = book
-        .navigation
-        .landmarks
+    let mut landmarks = source_landmarks
         .into_iter()
         .filter(|landmark| !landmark.kind.eq_ignore_ascii_case("cover"))
         .map(|mut landmark| {
@@ -203,7 +267,7 @@ pub(crate) fn normalize(book: Book) -> KindleBook {
     {
         if let Some(body_section) = sections
             .iter()
-            .find(|section| section.linear && Some(section.href.as_str()) != toc_href.as_deref())
+            .find(|section| section.linear && Some(section.href.as_str()) != toc_href)
         {
             landmarks.push(KindleLandmark {
                 kind: "text".to_owned(),
@@ -220,23 +284,11 @@ pub(crate) fn normalize(book: Book) -> KindleBook {
             landmarks.push(KindleLandmark {
                 kind: "toc".to_owned(),
                 label: "目次".to_owned(),
-                href,
+                href: href.to_owned(),
             });
         }
     }
-    let metadata = normalize_metadata(book.metadata, book.rendition);
-    KindleBook {
-        metadata,
-        layout: KindleLayout {
-            writing_mode: book.layout.writing_mode,
-            page_progression: book.layout.page_progression,
-            direction: book.layout.direction,
-        },
-        sections,
-        navigation,
-        landmarks,
-        resources: normalize_resources(book.resources.items),
-    }
+    landmarks
 }
 
 fn normalize_metadata(
@@ -274,6 +326,8 @@ fn normalize_metadata(
         contributors,
         language: metadata.language,
         identifier: metadata.identifier,
+        publication_date: metadata.publication_date,
+        modified: metadata.modified,
         publisher: metadata.publisher,
         description: metadata.description,
         cover_resource_id: metadata.cover,
@@ -291,8 +345,11 @@ fn normalize_metadata(
     }
 }
 
-fn normalize_resources(resources: Vec<crate::book::Resource>) -> Vec<KindleResource> {
-    resources
+fn normalize_resources(
+    resources: Vec<crate::book::Resource>,
+    is_comic: bool,
+) -> Vec<KindleResource> {
+    let mut resources: Vec<KindleResource> = resources
         .into_iter()
         .map(|resource| {
             let crate::book::Resource {
@@ -302,24 +359,95 @@ fn normalize_resources(resources: Vec<crate::book::Resource>) -> Vec<KindleResou
                 properties,
                 data,
             } = resource;
-            let is_css = media_type.eq_ignore_ascii_case("text/css");
             KindleResource {
                 id,
                 href,
                 media_type,
                 properties,
-                data: if is_css {
-                    crate::kindle::project_css_for_kindle(
-                        std::str::from_utf8(&data)
-                            .expect("EPUB CSS resources are normalized to UTF-8"),
-                    )
-                    .into_bytes()
-                } else {
-                    data
-                },
+                data,
             }
         })
-        .collect()
+        .collect();
+
+    let eligible_indices = resources
+        .iter()
+        .enumerate()
+        .filter_map(|(index, resource)| {
+            (!is_comic
+                && resource.data.len() > KINDLE_LD_IMAGE_MAX_BYTES
+                && (resource.media_type.eq_ignore_ascii_case("image/jpeg")
+                    || resource.media_type.eq_ignore_ascii_case("image/png")))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+
+    for (index, converted) in convert_eligible_images(&resources, &eligible_indices) {
+        if let Some(converted) = converted {
+            resources[index].data = converted;
+            resources[index].media_type = "image/jpeg".to_owned();
+        }
+    }
+    resources
+}
+
+fn convert_eligible_images(
+    resources: &[KindleResource],
+    indices: &[usize],
+) -> Vec<(usize, Option<Vec<u8>>)> {
+    let worker_count = image_worker_count(indices.len());
+    if worker_count == 0 {
+        return Vec::new();
+    }
+
+    let chunk_size = indices.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let handles = indices
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|&index| {
+                            let resource = &resources[index];
+                            let converted =
+                                convert_large_image_to_jpeg(&resource.data, &resource.media_type)
+                                    .ok();
+                            (index, converted)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .flatten()
+            .collect()
+    })
+}
+
+fn image_worker_count(target_count: usize) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    bounded_image_worker_count(target_count, available)
+}
+
+fn bounded_image_worker_count(target_count: usize, available: usize) -> usize {
+    target_count.min((available / 2).max(1))
+}
+
+fn project_css_resources(resources: &mut [KindleResource]) {
+    for resource in resources {
+        if resource.media_type.eq_ignore_ascii_case("text/css") {
+            resource.data = crate::kindle::project_css_for_kindle(
+                std::str::from_utf8(&resource.data)
+                    .expect("EPUB CSS resources are normalized to UTF-8"),
+            )
+            .into_bytes();
+        }
+    }
 }
 
 fn is_bodymatter_landmark(kind: &str) -> bool {

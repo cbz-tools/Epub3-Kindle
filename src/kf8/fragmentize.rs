@@ -114,6 +114,8 @@ pub(crate) fn fragmentize_body(
     }
     skeleton.extend_from_slice(&body[cursor..]);
 
+    let mut removal_index = 0usize;
+    let mut removed_before = 0usize;
     let contexts = chunks
         .iter()
         .map(|chunk| {
@@ -121,17 +123,18 @@ pub(crate) fn fragmentize_body(
             // range. They all insert at that range's single skeleton offset;
             // using each chunk's source offset would count the removed text
             // repeatedly and make the second insertion run past the skeleton.
-            let containing_range = removals
-                .iter()
-                .find(|(start, end)| *start <= chunk.source_start && chunk.source_start < *end);
-            let anchor = containing_range
+            while let Some((start, end)) = removals.get(removal_index) {
+                if *end > chunk.source_start {
+                    break;
+                }
+                removed_before += end - start;
+                removal_index += 1;
+            }
+            let anchor = removals
+                .get(removal_index)
+                .filter(|(start, end)| *start <= chunk.source_start && chunk.source_start < *end)
                 .map(|(start, _)| *start)
                 .unwrap_or(chunk.source_start);
-            let removed_before = removals
-                .iter()
-                .filter(|(_, end)| *end <= anchor)
-                .map(|(start, end)| end - start)
-                .sum::<usize>();
             FragmentContext {
                 selector: chunk.selector.clone(),
                 source_start: chunk.source_start,

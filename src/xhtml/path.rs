@@ -21,13 +21,23 @@ pub(crate) fn resolve_path(base_href: &str, target: &str) -> Option<String> {
 }
 
 pub(crate) fn normalize_path(path: &str) -> Option<String> {
-    let normalized = normalize_path_lossy(path);
-    (!normalized.is_empty()).then_some(normalized)
+    normalize_path_checked(path)
 }
 
 pub(crate) fn normalize_path_lossy(path: &str) -> String {
+    normalize_path_checked(path).unwrap_or_default()
+}
+
+/// Normalize a package-relative path while retaining root-escape failures.
+///
+/// The lossy helper is retained for existing lookup/index callers, but input
+/// validation must use this form so `../` cannot silently disappear.
+pub(crate) fn normalize_path_checked(path: &str) -> Option<String> {
+    // A literal percent is a valid OCF path character. Decode well-formed URI
+    // escapes, while retaining the historical lookup behavior for malformed
+    // escapes instead of turning it into an unrelated path rejection.
     let normalized = percent_decode(path).unwrap_or_else(|| path.to_owned());
-    normalize_decoded_path(&normalized).unwrap_or_default()
+    normalize_decoded_path(&normalized)
 }
 
 fn normalize_decoded_path(path: &str) -> Option<String> {
@@ -37,7 +47,7 @@ fn normalize_decoded_path(path: &str) -> Option<String> {
         match component {
             "" | "." => {}
             ".." => {
-                components.pop();
+                components.pop()?;
             }
             value => components.push(value),
         }

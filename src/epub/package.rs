@@ -5,10 +5,10 @@
 //! modules rather than being reassembled here.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use zip::ZipArchive;
+use super::package_archive::{BoundedZipArchive, read_zip_entry, validate_ocf_paths};
 
 use crate::book::{
     Book, ContentDocument, Navigation, ReadingOrderItem, RenditionAlign, RenditionSemantics,
@@ -19,28 +19,34 @@ use crate::error::{Error, Result};
 use crate::xhtml::path::{
     is_external_reference, normalize_path_lossy as normalize_path, resolve_path,
 };
+use crate::{WarningCode, WarningCollector};
 
-use super::css::validate_kf8_css;
+use super::css::font_face_resource_references;
 use super::navigation::{canonicalize_navigation, parse_nav_xhtml, parse_ncx};
 use super::opf::{
     ManifestItem, cover_image_paths, has_property, is_legacy_svg_cover_document, parse_opf,
     parse_rootfile,
 };
 use super::xhtml::{
-    document_styles_with_occupied_hrefs, infer_layout,
-    parse_xhtml_semantics_and_document_root_writing_mode, reject_mathml, reject_scripting,
-    reject_scripting_and_media_playback, reject_unsupported_srcset_and_generic_object,
-    unique_resource_id, validate_viewport,
+    ViewportQuality, document_styles_with_occupied_hrefs, infer_layout,
+    parse_xhtml_semantics_and_document_root_writing_mode, sanitize_unsupported_xhtml,
+    unique_resource_id, validate_local_resource_paths, validate_viewport,
 };
+
+/// Amazon accepts individual HTML/XHTML content documents strictly below
+/// 30,000,000 decimal bytes, and fewer than 300 such documents per publication.
+const MAX_AMAZON_HTML_BYTES: u64 = 30_000_000;
+const MAX_AMAZON_HTML_DOCUMENTS: usize = 300;
 
 /// Parse an EPUB package from bytes without depending on a filesystem.
 struct LoadedPackage<'a> {
-    archive: ZipArchive<Cursor<&'a [u8]>>,
+    archive: BoundedZipArchive<Cursor<&'a [u8]>>,
     parsed: super::opf::ParsedOpf,
     base: PathBuf,
     manifest_id_index: ManifestIdIndex,
     font_obfuscation_keys: HashMap<String, [u8; 20]>,
     content_source_ids: HashSet<String>,
+    spine_content_source_indices: Vec<Option<usize>>,
 }
 
 struct ManifestIdIndex {
@@ -57,7 +63,11 @@ impl ManifestIdIndex {
     }
 
     fn get<'a>(&self, manifest: &'a [ManifestItem], id: &str) -> Option<&'a ManifestItem> {
-        self.positions.get(id).map(|&index| &manifest[index])
+        self.index(id).map(|index| &manifest[index])
+    }
+
+    fn index(&self, id: &str) -> Option<usize> {
+        self.positions.get(id).copied()
     }
 }
 
@@ -70,35 +80,39 @@ struct DiscoveredContent {
     content: Vec<ContentDocument>,
     reading_items: Vec<ReadingOrderItem>,
     document_writing_modes: Vec<Option<crate::book::WritingMode>>,
+    fixed_page_viewports: Vec<Option<String>>,
 }
 
-fn load_package(input: &[u8]) -> Result<LoadedPackage<'_>> {
-    let mut archive = ZipArchive::new(Cursor::new(input))
-        .map_err(|error| Error::InvalidEpub(format!("not a readable EPUB ZIP: {error}")))?;
+fn load_package<'a>(input: &'a [u8], warnings: &mut WarningCollector) -> Result<LoadedPackage<'a>> {
+    validate_ocf_paths(input)?;
+    let mut archive = BoundedZipArchive::new(Cursor::new(input))?;
     let container = read_zip_entry(&mut archive, "META-INF/container.xml")?;
     let opf_path = parse_rootfile(&container)?;
     let opf = read_zip_entry(&mut archive, &opf_path)?;
     let parsed = parse_opf(&opf)?;
     let manifest_id_index = ManifestIdIndex::from_manifest(&parsed.manifest);
-    if let Some(item) = parsed
+    if parsed
         .manifest
         .iter()
-        .find(|item| has_property(item, "mathml"))
+        .any(|item| has_property(item, "mathml"))
     {
-        return Err(Error::UnsupportedEpub(format!(
-            "MathML is unsupported by the KF8 projection (manifest item {})",
-            item.id
-        )));
+        warnings.add_category_once(
+            WarningCode::W005,
+            "MathML manifest semantics were reduced to readable content",
+        );
     }
     validate_rendition_semantics(&parsed)?;
-    reject_unsupported_media_semantics(&parsed, &manifest_id_index)?;
+    warn_unsupported_media_semantics(&parsed, &manifest_id_index, warnings)?;
     let base = Path::new(&opf_path)
         .parent()
         .unwrap_or_else(|| Path::new(""))
         .to_path_buf();
+    validate_manifest_paths(&parsed.manifest, &base)?;
+    validate_amazon_document_count(&parsed.manifest, warnings);
     let font_obfuscation_keys =
         super::font_obfuscation::load_font_obfuscation(&mut archive, &parsed, &base)?;
     let mut content_source_ids = HashSet::new();
+    let mut spine_content_source_indices = Vec::with_capacity(parsed.spine.len());
     for spine_item in &parsed.spine {
         let source = manifest_id_index
             .get(&parsed.manifest, &spine_item.idref)
@@ -108,11 +122,17 @@ fn load_package(input: &[u8]) -> Result<LoadedPackage<'_>> {
                     spine_item.idref
                 ))
             })?;
-        content_source_ids.insert(
-            resolve_content_source(source, &parsed.manifest, &manifest_id_index)?
-                .id
-                .clone(),
-        );
+        if let Some(content_source) = resolve_content_source_for_spine(
+            source,
+            &parsed.manifest,
+            &manifest_id_index,
+            warnings,
+        )? {
+            content_source_ids.insert(content_source.id.clone());
+            spine_content_source_indices.push(manifest_id_index.index(&content_source.id));
+        } else {
+            spine_content_source_indices.push(None);
+        }
     }
     Ok(LoadedPackage {
         archive,
@@ -121,18 +141,26 @@ fn load_package(input: &[u8]) -> Result<LoadedPackage<'_>> {
         manifest_id_index,
         font_obfuscation_keys,
         content_source_ids,
+        spine_content_source_indices,
     })
 }
 
 fn load_resources(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    archive: &mut BoundedZipArchive<Cursor<&[u8]>>,
     parsed: &super::opf::ParsedOpf,
     base: &Path,
     font_obfuscation_keys: &HashMap<String, [u8; 20]>,
     content_source_ids: &HashSet<String>,
+    manifest_id_index: &ManifestIdIndex,
+    warnings: &mut WarningCollector,
 ) -> Result<LoadedResources> {
     let mut resources = Resources::default();
     let mut xhtml = HashMap::<String, String>::new();
+    let spine_ids = parsed
+        .spine
+        .iter()
+        .map(|item| item.idref.as_str())
+        .collect::<HashSet<_>>();
     for item in &parsed.manifest {
         if is_external_reference(&item.href) {
             // Remote resources are not EPUB ZIP entries. Preserve the
@@ -142,41 +170,76 @@ fn load_resources(
             // omission boundary for resources that cannot be packaged.
             continue;
         }
-        let path = resolve_href(base, &item.href);
-        let data = read_zip_entry(archive, &path)?;
-        let data = match font_obfuscation_keys.get(&path) {
-            Some(key) => super::font_obfuscation::deobfuscate_font(&data, key),
-            None => data,
+        let binary_fallback = if !spine_ids.contains(item.id.as_str())
+            && is_unsupported_binary_media_type(&item.media_type)
+            && item.fallback.is_some()
+        {
+            Some(resolve_binary_fallback(
+                item,
+                &parsed.manifest,
+                manifest_id_index,
+            )?)
+        } else {
+            None
         };
-        let resource_data = if item
+        if binary_fallback.is_some() {
+            warnings.add_category_once(
+                WarningCode::W002,
+                "an unsupported manifest resource used its EPUB binary fallback",
+            );
+        }
+        let source_item = binary_fallback.unwrap_or(item);
+        let path = resolve_href(base, &source_item.href);
+        if path.is_empty() {
+            return Err(Error::InvalidEpub(format!(
+                "manifest item {} has a path that escapes the EPUB root",
+                source_item.id
+            )));
+        }
+        if is_html_content_document(source_item) {
+            let size = archive.entry_size(&path)?;
+            if size >= MAX_AMAZON_HTML_BYTES {
+                warnings.add_category_once(
+                    WarningCode::W006,
+                    "one or more HTML/XHTML content documents meet or exceed Amazon's 30,000,000-byte publishing guidance",
+                );
+            }
+        }
+        let mut data = read_zip_entry(archive, &path)?;
+        if let Some(key) = font_obfuscation_keys.get(&path) {
+            super::font_obfuscation::deobfuscate_font(&mut data, key);
+        }
+        let resource_data = if source_item
             .media_type
             .eq_ignore_ascii_case("application/xhtml+xml")
-            || item.media_type.eq_ignore_ascii_case("text/html")
+            || source_item.media_type.eq_ignore_ascii_case("text/html")
         {
             let source = decode_text_entry(&data, TextKind::Xhtml)?;
-            reject_mathml(&source)?;
-            if content_source_ids.contains(item.id.as_str()) {
-                reject_scripting_and_media_playback(&source)?;
-                reject_unsupported_srcset_and_generic_object(
-                    &source,
-                    &item.href,
-                    &parsed.manifest,
-                )?;
-                xhtml.insert(item.id.clone(), source);
+            validate_local_resource_paths(&source, &path)?;
+            let source = if content_source_ids.contains(source_item.id.as_str()) {
+                sanitize_unsupported_xhtml(&source, warnings)?
+            } else {
+                source
+            };
+            if content_source_ids.contains(source_item.id.as_str()) {
+                xhtml.insert(source_item.id.clone(), source);
             }
             // ContentDocument owns the parsed XHTML source. XHTML resources
             // are routing metadata only after parsing and are never emitted
             // as binary KF8 resources, so do not retain a second full byte
             // buffer in Book.resources.
             Vec::new()
-        } else if item.media_type.eq_ignore_ascii_case("text/css") {
+        } else if source_item.media_type.eq_ignore_ascii_case("text/css") {
             let source = decode_text_entry(&data, TextKind::Css)?;
             // Downstream CSS flows consume the one canonical UTF-8 form.
             source.into_bytes()
-        } else if item.media_type.eq_ignore_ascii_case("image/svg+xml")
-            && content_source_ids.contains(item.id.as_str())
+        } else if source_item.media_type.eq_ignore_ascii_case("image/svg+xml")
+            && content_source_ids.contains(source_item.id.as_str())
         {
-            xhtml.insert(item.id.clone(), svg_content_document(&data)?);
+            let source = decode_text_entry(&data, TextKind::Xhtml)?;
+            validate_local_resource_paths(&source, &path)?;
+            let source = sanitize_unsupported_xhtml(&source, warnings)?;
+            xhtml.insert(source_item.id.clone(), svg_content_document(&source)?);
             Vec::new()
         } else {
             data
@@ -184,7 +247,7 @@ fn load_resources(
         resources.items.push(Resource {
             id: item.id.clone(),
             href: item.href.clone(),
-            media_type: item.media_type.clone(),
+            media_type: source_item.media_type.clone(),
             properties: item.properties.clone(),
             data: resource_data,
         });
@@ -198,6 +261,8 @@ fn discover_content(
     resources: &mut Resources,
     xhtml: &mut HashMap<String, String>,
     manifest_id_index: &ManifestIdIndex,
+    spine_content_source_indices: &[Option<usize>],
+    warnings: &mut WarningCollector,
 ) -> Result<DiscoveredContent> {
     let mut occupied_hrefs = resources
         .items
@@ -207,47 +272,54 @@ fn discover_content(
     let mut content = Vec::new();
     let mut reading_items = Vec::new();
     let mut document_writing_modes = Vec::new();
+    let mut fixed_page_viewports = Vec::new();
     let cover_image_paths = cover_image_paths(parsed, base);
     let mut occupied_resource_ids = resources
         .items
         .iter()
         .map(|resource| resource.id.clone())
         .collect::<HashSet<_>>();
-    let effective_items = parsed
-        .spine
-        .iter()
-        .map(|spine_item| {
-            let item = manifest_id_index
-                .get(&parsed.manifest, &spine_item.idref)
-                .ok_or_else(|| {
-                    Error::InvalidEpub(format!(
-                        "spine references missing manifest item {}",
-                        spine_item.idref
-                    ))
-                })?;
-            resolve_content_source(item, &parsed.manifest, manifest_id_index)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let mut remaining_source_uses = HashMap::<String, usize>::new();
-    for effective_item in &effective_items {
-        *remaining_source_uses
-            .entry(effective_item.id.clone())
-            .or_default() += 1;
+    if spine_content_source_indices.len() != parsed.spine.len() {
+        return Err(Error::Output(
+            "spine content source index does not match spine".to_owned(),
+        ));
     }
-    for (spine_index, (spine_item, effective_item)) in
-        parsed.spine.iter().zip(effective_items).enumerate()
-    {
-        let source = match remaining_source_uses.get_mut(&effective_item.id) {
-            Some(remaining) if *remaining == 1 => xhtml.remove(&effective_item.id),
-            Some(remaining) => {
-                *remaining -= 1;
-                xhtml.get(&effective_item.id).cloned()
+    let mut remaining_source_uses = HashMap::<usize, usize>::new();
+    for &effective_index in spine_content_source_indices.iter().flatten() {
+        *remaining_source_uses.entry(effective_index).or_default() += 1;
+    }
+    for (spine_index, spine_item) in parsed.spine.iter().enumerate() {
+        let source_item = manifest_id_index
+            .get(&parsed.manifest, &spine_item.idref)
+            .ok_or_else(|| {
+                Error::InvalidEpub(format!(
+                    "spine references missing manifest item {}",
+                    spine_item.idref
+                ))
+            })?;
+        let source = spine_content_source_indices[spine_index].and_then(|effective_index| {
+            let effective_id = &parsed.manifest[effective_index].id;
+            match remaining_source_uses.get_mut(&effective_index) {
+                Some(remaining) if *remaining == 1 => xhtml.remove(effective_id),
+                Some(remaining) => {
+                    *remaining -= 1;
+                    xhtml.get(effective_id).cloned()
+                }
+                None => None,
             }
-            None => None,
-        };
+        });
         if let Some(source) = source {
+            let effective_item = spine_content_source_indices[spine_index]
+                .and_then(|index| parsed.manifest.get(index))
+                .expect("content source was validated during package loading");
             if spine_item.layout == super::opf::SpineLayout::PrePaginated {
-                validate_viewport(&source)?;
+                if validate_viewport(&source)? == ViewportQuality::Degraded {
+                    warnings.add_category_once(
+                        WarningCode::W004,
+                        "fixed-page viewport metadata was incomplete or ambiguous and was degraded",
+                    );
+                }
+                fixed_page_viewports.push(super::xhtml::fixed_page_viewport_resolution(&source)?);
             }
             let (mut semantic, writing_mode) =
                 parse_xhtml_semantics_and_document_root_writing_mode(&source)?;
@@ -265,7 +337,9 @@ fn discover_content(
             let discovered_styles = document_styles_with_occupied_hrefs(
                 &source,
                 &effective_item.href,
+                &resolve_href(base, &effective_item.href),
                 &mut occupied_hrefs,
+                warnings,
             )?;
             let referenced_styles = discovered_styles
                 .iter()
@@ -308,7 +382,12 @@ fn discover_content(
                 spine_item.layout == super::opf::SpineLayout::PrePaginated,
             );
             content.push(content_document);
+        } else if spine_item.layout == super::opf::SpineLayout::PrePaginated {
+            fixed_page_viewports.push(None);
         }
+        let effective_item = spine_content_source_indices[spine_index]
+            .and_then(|index| parsed.manifest.get(index))
+            .unwrap_or(source_item);
         reading_items.push(ReadingOrderItem {
             id: spine_item.idref.clone(),
             href: effective_item.href.clone(),
@@ -320,10 +399,17 @@ fn discover_content(
         content,
         reading_items,
         document_writing_modes,
+        fixed_page_viewports,
     })
 }
 
+#[allow(dead_code)]
 pub fn parse_epub(input: &[u8]) -> Result<Book> {
+    let mut warnings = WarningCollector::new();
+    parse_epub_with_warnings(input, &mut warnings)
+}
+
+pub fn parse_epub_with_warnings(input: &[u8], warnings: &mut WarningCollector) -> Result<Book> {
     let LoadedPackage {
         mut archive,
         parsed,
@@ -331,7 +417,8 @@ pub fn parse_epub(input: &[u8]) -> Result<Book> {
         manifest_id_index,
         font_obfuscation_keys,
         content_source_ids,
-    } = load_package(input)?;
+        spine_content_source_indices,
+    } = load_package(input, warnings)?;
     let LoadedResources {
         resources,
         mut xhtml,
@@ -341,21 +428,83 @@ pub fn parse_epub(input: &[u8]) -> Result<Book> {
         &base,
         &font_obfuscation_keys,
         &content_source_ids,
+        &manifest_id_index,
+        warnings,
     )?;
     let mut resources = resources;
-    let mut styles = Styles::default();
     let DiscoveredContent {
         content,
         reading_items,
         document_writing_modes,
+        fixed_page_viewports,
     } = discover_content(
         &parsed,
         &base,
         &mut resources,
         &mut xhtml,
         &manifest_id_index,
+        &spine_content_source_indices,
+        warnings,
     )?;
-    let active_css_hrefs = super::css::active_css_stylesheets(&content, &resources.items);
+    let styles = validate_and_parse_styles(&content, &resources, &base, warnings)?;
+
+    let navigation = load_navigation(&mut archive, &parsed, &base, &manifest_id_index)?;
+    let layout = infer_layout(
+        &styles,
+        parsed.page_progression,
+        parsed.primary_writing_mode,
+        &document_writing_modes,
+    );
+    let cover = parsed.metadata.cover.clone().or_else(|| {
+        parsed
+            .manifest
+            .iter()
+            .find(|item| {
+                item.properties
+                    .iter()
+                    .any(|property| property.eq_ignore_ascii_case("cover-image"))
+            })
+            .map(|item| item.id.clone())
+    });
+    let mut metadata = parsed.metadata;
+    metadata.cover = cover;
+    if metadata.original_resolution.is_none()
+        && !fixed_page_viewports.is_empty()
+        && fixed_page_viewports.iter().all(Option::is_some)
+    {
+        let first = fixed_page_viewports[0].as_deref();
+        if fixed_page_viewports
+            .iter()
+            .all(|viewport| viewport.as_deref() == first)
+        {
+            metadata.original_resolution = first.map(str::to_owned);
+        }
+    }
+    Ok(Book {
+        metadata,
+        reading_order: crate::book::ReadingOrder {
+            items: reading_items,
+            page_progression: parsed.page_progression,
+        },
+        navigation,
+        content,
+        resources,
+        layout,
+        rendition: parsed.rendition,
+        styles,
+    })
+}
+
+fn validate_and_parse_styles(
+    content: &[ContentDocument],
+    resources: &Resources,
+    base: &Path,
+    warnings: &mut WarningCollector,
+) -> Result<Styles> {
+    let css_resource_index = super::css::CssResourceIndex::new(content, &resources.items);
+    let active_css_hrefs =
+        super::css::active_css_stylesheets(&css_resource_index, content, warnings)?;
+    let mut styles = Styles::default();
     for resource in resources
         .items
         .iter()
@@ -366,17 +515,41 @@ pub fn parse_epub(input: &[u8]) -> Result<Book> {
         }
         let source = std::str::from_utf8(&resource.data)
             .expect("EPUB CSS resources are normalized to UTF-8");
-        validate_kf8_css(source)?;
+        if !resource
+            .properties
+            .iter()
+            .any(|property| property == SYNTHETIC_INLINE_CSS_PROPERTY)
+        {
+            let stylesheet_path = resolve_href(base, &resource.href);
+            super::css::validate_local_resource_paths(source, &stylesheet_path)?;
+        }
+        super::css::warn_remote_css_references(source, warnings)?;
+        super::css::validate_kf8_css_with_warnings(source, warnings)?;
         styles
             .sheets
             .push(crate::epub::parse_css(&resource.href, source));
     }
+    validate_required_font_resources(
+        &active_css_hrefs,
+        resources,
+        base,
+        &css_resource_index,
+        warnings,
+    )?;
     styles.computed = styles
         .sheets
         .iter()
         .flat_map(|sheet| sheet.computed_styles())
         .collect();
+    Ok(styles)
+}
 
+fn load_navigation(
+    archive: &mut BoundedZipArchive<Cursor<&[u8]>>,
+    parsed: &super::opf::ParsedOpf,
+    base: &Path,
+    manifest_id_index: &ManifestIdIndex,
+) -> Result<Navigation> {
     let nav_item = parsed
         .manifest
         .iter()
@@ -386,23 +559,23 @@ pub fn parse_epub(input: &[u8]) -> Result<Book> {
         if let Some(ncx_id) = parsed.ncx_id.as_deref() {
             let item = manifest_id_index.get(&parsed.manifest, ncx_id);
             if let Some(item) = item {
-                let path = resolve_href(&base, &item.href);
+                let path = resolve_href(base, &item.href);
                 (
-                    parse_ncx(&read_zip_entry(&mut archive, &path)?)?,
+                    parse_ncx(&read_zip_entry(archive, &path)?)?,
                     Some(path),
-                    nav_item.map(|nav_item| resolve_href(&base, &nav_item.href)),
+                    nav_item.map(|nav_item| resolve_href(base, &nav_item.href)),
                 )
             } else {
                 (
                     Navigation::default(),
                     None,
-                    nav_item.map(|nav_item| resolve_href(&base, &nav_item.href)),
+                    nav_item.map(|nav_item| resolve_href(base, &nav_item.href)),
                 )
             }
         } else if let Some(item) = nav_item {
-            let path = resolve_href(&base, &item.href);
+            let path = resolve_href(base, &item.href);
             (
-                parse_nav_xhtml(&read_zip_entry(&mut archive, &path)?)?,
+                parse_nav_xhtml(&read_zip_entry(archive, &path)?)?,
                 Some(path),
                 None,
             )
@@ -427,7 +600,7 @@ pub fn parse_epub(input: &[u8]) -> Result<Book> {
             ..Navigation::default()
         };
         if let Some(nav_path) = navigation_path.as_deref() {
-            canonicalize_navigation(&mut nav, nav_path, &base, &parsed.manifest);
+            canonicalize_navigation(&mut nav, nav_path, base, &parsed.manifest)?;
         }
         navigation.landmarks = nav.landmarks;
         navigation.page_list = nav.page_list;
@@ -436,8 +609,8 @@ pub fn parse_epub(input: &[u8]) -> Result<Book> {
             navigation.items = nav.items;
         }
     } else if let Some(nav_path) = supplemental_nav {
-        let mut nav = parse_nav_xhtml(&read_zip_entry(&mut archive, &nav_path)?)?;
-        canonicalize_navigation(&mut nav, &nav_path, &base, &parsed.manifest);
+        let mut nav = parse_nav_xhtml(&read_zip_entry(archive, &nav_path)?)?;
+        canonicalize_navigation(&mut nav, &nav_path, base, &parsed.manifest)?;
         navigation.landmarks = nav.landmarks;
         navigation.page_list = nav.page_list;
         navigation.custom = nav.custom;
@@ -446,66 +619,30 @@ pub fn parse_epub(input: &[u8]) -> Result<Book> {
         }
     }
     if let Some(path) = navigation_path {
-        canonicalize_navigation(&mut navigation, &path, &base, &parsed.manifest);
+        canonicalize_navigation(&mut navigation, &path, base, &parsed.manifest)?;
     }
-    let layout = infer_layout(
-        &styles,
-        parsed.page_progression,
-        parsed.primary_writing_mode,
-        &document_writing_modes,
-    );
-    let cover = parsed.metadata.cover.clone().or_else(|| {
-        parsed
-            .manifest
-            .iter()
-            .find(|item| {
-                item.properties
-                    .iter()
-                    .any(|property| property.eq_ignore_ascii_case("cover-image"))
-            })
-            .map(|item| item.id.clone())
-    });
-    let mut metadata = parsed.metadata;
-    metadata.cover = cover;
-    Ok(Book {
-        metadata,
-        reading_order: crate::book::ReadingOrder {
-            items: reading_items,
-            page_progression: parsed.page_progression,
-        },
-        navigation,
-        content,
-        resources,
-        layout,
-        rendition: parsed.rendition,
-        styles,
-    })
+    Ok(navigation)
 }
 
-fn reject_unsupported_media_semantics(
+fn warn_unsupported_media_semantics(
     parsed: &super::opf::ParsedOpf,
     manifest_id_index: &ManifestIdIndex,
+    warnings: &mut WarningCollector,
 ) -> Result<()> {
     for item in &parsed.manifest {
-        if let Some(media_overlay) = item.media_overlay.as_deref() {
-            return Err(Error::UnsupportedEpub(format!(
-                "G8-06/G8-08/G8-09 media overlay boundary: manifest item {} declares media-overlay {}",
-                item.id, media_overlay
-            )));
-        }
-        if has_property(item, "media-overlay") {
-            return Err(Error::UnsupportedEpub(format!(
-                "G8-06/G8-08/G8-09 media overlay boundary: manifest item {} declares the media-overlay property",
-                item.id
-            )));
+        if item.media_overlay.is_some() || has_property(item, "media-overlay") {
+            warnings.add_category_once(
+                WarningCode::W003,
+                "media-overlay playback semantics were dropped while preserving the XHTML body",
+            );
         }
     }
     for spine_item in &parsed.spine {
-        if let Some(media_overlay) = spine_item.media_overlay.as_deref() {
-            return Err(Error::UnsupportedEpub(format!(
-                "G8-06/G8-08/G8-09 media overlay boundary: spine item {} declares media-overlay {}",
-                spine_item.idref, media_overlay
-            )));
+        if spine_item.media_overlay.is_some() {
+            warnings.add_category_once(
+                WarningCode::W003,
+                "media-overlay playback semantics were dropped while preserving the XHTML body",
+            );
         }
         let item = manifest_id_index
             .get(&parsed.manifest, &spine_item.idref)
@@ -516,22 +653,22 @@ fn reject_unsupported_media_semantics(
                 ))
             })?;
         if is_audio_media_type(&item.media_type) {
-            return Err(Error::UnsupportedEpub(format!(
-                "G6-23/G6-25 media boundary: spine item {} is an audio resource and playback is unsupported",
-                item.id
-            )));
+            warnings.add_category_once(
+                WarningCode::W003,
+                "spine audio playback was dropped without promoting the audio resource to a content document",
+            );
         }
         if is_video_media_type(&item.media_type) {
-            return Err(Error::UnsupportedEpub(format!(
-                "G6-24/G6-25 media boundary: spine item {} is a video resource and playback is unsupported",
-                item.id
-            )));
+            warnings.add_category_once(
+                WarningCode::W003,
+                "spine video playback was dropped without promoting the video resource to a content document",
+            );
         }
         if is_smil_media_type(&item.media_type) {
-            return Err(Error::UnsupportedEpub(format!(
-                "G8-06/G8-07/G8-08/G8-09 media overlay boundary: spine item {} is an SMIL document",
-                item.id
-            )));
+            warnings.add_category_once(
+                WarningCode::W003,
+                "SMIL media-overlay playback was dropped without promoting it to a content document",
+            );
         }
     }
     Ok(())
@@ -584,21 +721,6 @@ fn merge_rendition(
     }
 }
 
-pub(super) fn read_zip_entry<R: Read + std::io::Seek>(
-    archive: &mut ZipArchive<R>,
-    path: &str,
-) -> Result<Vec<u8>> {
-    let mut entry = archive
-        .by_name(path)
-        .map_err(|error| Error::InvalidEpub(format!("missing EPUB entry {path}: {error}")))?;
-    let mut data = Vec::new();
-    entry.read_to_end(&mut data).map_err(|source| Error::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-    Ok(data)
-}
-
 fn is_content_document(item: &ManifestItem) -> bool {
     item.media_type
         .eq_ignore_ascii_case("application/xhtml+xml")
@@ -640,9 +762,111 @@ fn resolve_content_source<'a>(
     }
 }
 
-fn svg_content_document(data: &[u8]) -> Result<String> {
-    let source = decode_text_entry(data, TextKind::Xhtml)?;
-    reject_scripting(&source)?;
+fn resolve_content_source_for_spine<'a>(
+    item: &'a ManifestItem,
+    manifest: &'a [ManifestItem],
+    manifest_id_index: &ManifestIdIndex,
+    warnings: &mut WarningCollector,
+) -> Result<Option<&'a ManifestItem>> {
+    if (is_audio_media_type(&item.media_type)
+        || is_video_media_type(&item.media_type)
+        || is_smil_media_type(&item.media_type))
+        && item.fallback.is_none()
+    {
+        return Ok(None);
+    }
+    let content_source = resolve_content_source(item, manifest, manifest_id_index)?;
+    if content_source.id != item.id {
+        warnings.add_category_once(
+            WarningCode::W002,
+            "an unsupported manifest resource used its EPUB fallback content",
+        );
+    }
+    Ok(Some(content_source))
+}
+
+fn resolve_binary_fallback<'a>(
+    item: &'a ManifestItem,
+    manifest: &'a [ManifestItem],
+    manifest_id_index: &ManifestIdIndex,
+) -> Result<&'a ManifestItem> {
+    let mut current = item;
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current.id.as_str()) {
+            return Err(Error::InvalidEpub(format!(
+                "fallback chain for {} contains a cycle at {}",
+                item.id, current.id
+            )));
+        }
+        let Some(fallback_id) = current.fallback.as_deref() else {
+            return Err(Error::UnsupportedEpub(format!(
+                "fallback chain for {} ends without a usable binary resource",
+                item.id
+            )));
+        };
+        current = manifest_id_index
+            .get(manifest, fallback_id)
+            .ok_or_else(|| {
+                Error::InvalidEpub(format!(
+                    "fallback chain for {} references missing target {}",
+                    item.id, fallback_id
+                ))
+            })?;
+        if is_usable_binary_fallback(current) {
+            return Ok(current);
+        }
+    }
+}
+
+fn is_unsupported_binary_media_type(media_type: &str) -> bool {
+    let media_type = media_type.to_ascii_lowercase();
+    if is_content_document_media_type(&media_type)
+        || media_type == "text/css"
+        || is_audio_media_type(&media_type)
+        || is_video_media_type(&media_type)
+        || is_smil_media_type(&media_type)
+    {
+        return false;
+    }
+    if media_type.starts_with("image/") {
+        return !matches!(
+            media_type.as_str(),
+            "image/gif" | "image/jpeg" | "image/jpg" | "image/png" | "image/webp"
+        );
+    }
+    !is_font_media_type(&media_type)
+}
+
+fn is_usable_binary_fallback(item: &ManifestItem) -> bool {
+    let media_type = item.media_type.to_ascii_lowercase();
+    if media_type == "image/svg+xml" {
+        return true;
+    }
+    if is_content_document_media_type(&media_type)
+        || media_type == "text/css"
+        || is_audio_media_type(&media_type)
+        || is_video_media_type(&media_type)
+        || is_smil_media_type(&media_type)
+    {
+        return false;
+    }
+    if media_type.starts_with("image/") {
+        return matches!(
+            media_type.as_str(),
+            "image/gif" | "image/jpeg" | "image/jpg" | "image/png" | "image/webp"
+        );
+    }
+    is_font_media_type(&media_type)
+}
+
+fn is_content_document_media_type(media_type: &str) -> bool {
+    media_type == "application/xhtml+xml"
+        || media_type == "text/html"
+        || media_type == "image/svg+xml"
+}
+
+fn svg_content_document(source: &str) -> Result<String> {
     let source = source.trim_start_matches('\u{feff}');
     let source = strip_svg_prolog(source);
     Ok(format!(
@@ -811,4 +1035,96 @@ pub(super) fn resolve_href(base: &Path, href: &str) -> String {
     let base = base.to_string_lossy();
     let base = format!("{base}/");
     resolve_path(&base, href).unwrap_or_default()
+}
+
+fn validate_manifest_paths(manifest: &[ManifestItem], base: &Path) -> Result<()> {
+    let base = format!("{}/", base.to_string_lossy());
+    for item in manifest {
+        if is_external_reference(&item.href) {
+            continue;
+        }
+        if resolve_path(&base, &item.href).is_none() {
+            return Err(Error::InvalidEpub(format!(
+                "manifest item {} has a path that escapes the EPUB root",
+                item.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_amazon_document_count(manifest: &[ManifestItem], warnings: &mut WarningCollector) {
+    let count = manifest
+        .iter()
+        .filter(|item| is_html_content_document(item) && !has_property(item, "nav"))
+        .count();
+    if count >= MAX_AMAZON_HTML_DOCUMENTS {
+        warnings.add_category_once(
+            WarningCode::W006,
+            "the publication meets or exceeds Amazon's 300 HTML/XHTML-document publishing guidance",
+        );
+    }
+}
+
+fn validate_required_font_resources(
+    active_css_hrefs: &HashSet<String>,
+    resources: &Resources,
+    base: &Path,
+    css_resource_index: &super::css::CssResourceIndex<'_>,
+    warnings: &mut WarningCollector,
+) -> Result<()> {
+    for stylesheet in resources.items.iter().filter(|resource| {
+        resource.media_type.eq_ignore_ascii_case("text/css")
+            && active_css_hrefs.contains(&normalize_path(&resource.href))
+    }) {
+        let targets = font_face_resource_references(
+            std::str::from_utf8(&stylesheet.data)
+                .expect("EPUB CSS resources are normalized to UTF-8"),
+        )?;
+        let stylesheet_base_href =
+            super::css::css_resource_base_href(css_resource_index, stylesheet);
+        let stylesheet_path = resolve_href(base, &stylesheet_base_href);
+        for target in targets {
+            if is_external_reference(&target) {
+                continue;
+            }
+            let resolved = resolve_path(&stylesheet_path, &target).ok_or_else(|| {
+                Error::InvalidEpub(format!("font resource path {target} escapes the EPUB root"))
+            })?;
+            if let Some(font) = resources.items.iter().find(|resource| {
+                normalize_path(&resolve_href(base, &resource.href)) == resolved
+                    && is_font_media_type(&resource.media_type)
+            }) {
+                if font.data.is_empty() {
+                    return Err(Error::InvalidEpub(format!(
+                        "required embedded font {} has zero length",
+                        font.id
+                    )));
+                }
+            } else {
+                warnings.add_category_once(
+                    WarningCode::W004,
+                    "one or more local @font-face resources could not be resolved and will use a fallback",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_html_content_document(item: &ManifestItem) -> bool {
+    item.media_type
+        .eq_ignore_ascii_case("application/xhtml+xml")
+        || item.media_type.eq_ignore_ascii_case("text/html")
+}
+
+fn is_font_media_type(media_type: &str) -> bool {
+    media_type.to_ascii_lowercase().starts_with("font/")
+        || matches!(
+            media_type.to_ascii_lowercase().as_str(),
+            "application/font-sfnt"
+                | "application/vnd.ms-opentype"
+                | "application/x-font-opentype"
+                | "application/x-font-ttf"
+        )
 }

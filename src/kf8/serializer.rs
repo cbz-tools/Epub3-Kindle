@@ -4,6 +4,7 @@ use super::builder::Kf8Record;
 use super::mobi_header::MobiHeader;
 use super::palmdoc::PalmDocHeader;
 use crate::error::Result;
+
 // Observed KindleGen behavior: trailing Record 0 padding is part of the
 // accepted header geometry. It is not content or a general KF8 requirement;
 // this self-writer policy preserves the audited container shape without
@@ -40,6 +41,7 @@ fn serialized_records(book: super::Kf8Book) -> Result<(Vec<u8>, Vec<Kf8Record>)>
         mut mobi,
         exth,
         title,
+        resource_record_count: _,
         resc_record,
         records,
     } = book;
@@ -47,6 +49,17 @@ fn serialized_records(book: super::Kf8Book) -> Result<(Vec<u8>, Vec<Kf8Record>)>
     let title = title.as_deref().map(str::as_bytes).unwrap_or_default();
     let header = encode_record_zero(&palm_doc, &mut mobi, &exth, title)?;
     let record_count = records.len() + 1;
+    validate_kf8_layout(&palm_doc, &mobi, resc_record, record_count, &records)?;
+    Ok((header, records))
+}
+
+pub(crate) fn validate_kf8_layout(
+    palm_doc: &PalmDocHeader,
+    mobi: &MobiHeader,
+    resc_record: u32,
+    record_count: usize,
+    records: &[Kf8Record],
+) -> Result<()> {
     palm_doc.validate()?;
     let text_record_count = palm_doc.record_count as usize;
     let expected_first_non_text = text_record_count
@@ -76,17 +89,74 @@ fn serialized_records(book: super::Kf8Book) -> Result<(Vec<u8>, Vec<Kf8Record>)>
             "RESC record index does not identify a RESC record".to_owned(),
         ));
     }
-    Ok((header, records))
+    Ok(())
 }
 
-fn align4(length: usize) -> Result<usize> {
-    length
-        .checked_add(3)
-        .map(|value| value & !3)
-        .ok_or_else(|| crate::error::Error::Output("4-byte alignment overflow".to_owned()))
+pub(crate) fn validate_kf8_section_pointers<F>(
+    mobi: &MobiHeader,
+    section_record_count: usize,
+    resc_record: u32,
+    starts_with: F,
+) -> Result<()>
+where
+    F: Fn(usize, &[u8]) -> bool,
+{
+    if section_record_count == 0 {
+        return Err(crate::error::Error::Output(
+            "KF8 section record count cannot be zero".to_owned(),
+        ));
+    }
+    let pointers = [
+        (
+            "first_non_text",
+            mobi.first_non_text_record,
+            Some(b"INDX".as_slice()),
+        ),
+        (
+            "first_image",
+            mobi.first_image_index,
+            Some(b"FDST".as_slice()),
+        ),
+        ("fdst", mobi.fdst_record, Some(b"FDST".as_slice())),
+        ("fcis", mobi.fcis_record, Some(b"FCIS".as_slice())),
+        ("flis", mobi.flis_record, Some(b"FLIS".as_slice())),
+        ("index", mobi.index_record, Some(b"INDX".as_slice())),
+        ("ncx", mobi.ncx_record, Some(b"INDX".as_slice())),
+        ("skel", mobi.skel_record, Some(b"INDX".as_slice())),
+        ("guide", mobi.guide_record, Some(b"INDX".as_slice())),
+    ];
+    for (name, pointer, magic) in pointers {
+        if pointer == u32::MAX {
+            continue;
+        }
+        if pointer as usize >= section_record_count {
+            return Err(crate::error::Error::Output(format!(
+                "KF8 {name} pointer {pointer} is outside {section_record_count} relative records"
+            )));
+        }
+        if let Some(magic) = magic {
+            if pointer == 0 || !starts_with(pointer as usize - 1, magic) {
+                return Err(crate::error::Error::Output(format!(
+                    "KF8 {name} pointer {pointer} does not identify {}",
+                    String::from_utf8_lossy(magic)
+                )));
+            }
+        }
+    }
+    if resc_record == 0 || resc_record as usize >= section_record_count {
+        return Err(crate::error::Error::Output(format!(
+            "KF8 RESC pointer {resc_record} is outside {section_record_count} relative records"
+        )));
+    }
+    if !starts_with(resc_record as usize - 1, b"RESC") {
+        return Err(crate::error::Error::Output(format!(
+            "KF8 RESC pointer {resc_record} does not identify RESC"
+        )));
+    }
+    Ok(())
 }
 
-fn encode_record_zero(
+pub(crate) fn encode_record_zero(
     palm_doc: &PalmDocHeader,
     mobi: &mut MobiHeader,
     exth: &[u8],
@@ -129,4 +199,11 @@ fn encode_record_zero(
     }
     bytes.resize(total_len, 0);
     Ok(bytes)
+}
+
+fn align4(length: usize) -> Result<usize> {
+    length
+        .checked_add(3)
+        .map(|value| value & !3)
+        .ok_or_else(|| crate::error::Error::Output("4-byte alignment overflow".to_owned()))
 }

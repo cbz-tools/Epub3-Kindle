@@ -4,24 +4,19 @@
 //! internal links, and AID-related preparation. MOBI serialization, resource
 //! geometry, TBS, and the PositionMap coordinate model remain elsewhere.
 
-use std::collections::HashSet;
-
 use super::css_flow::{
     CssResourceIndex, ResourceIndex, SectionIndex, css_flow_number, resource_reference,
-    rewrite_css_urls, stylesheet_flow_reference,
+    rewrite_css_urls,
 };
 use super::format::to_base32_fixed;
 use super::fragmentize::{FragmentContext, body_range, fragmentize_body};
 use super::position::{self, PositionMap};
-use crate::css::{advance_css_char, inline_style_href};
+use super::rawml_attributes::rewrite_quoted_attributes;
+use crate::css::advance_css_char;
 use crate::error::Result;
-use crate::kindle::{
-    KindleDirection as Direction, KindleLayout, KindleSection, KindleWritingMode as WritingMode,
-    project_inline_style_for_kindle,
-};
-use crate::xhtml::path::{is_external_reference, resolve_path};
+use crate::kindle::{KindleSection, project_inline_style_for_kindle};
+use crate::xhtml::path::is_external_reference;
 use crate::xhtml::scan::{
-    advance_char, contains_any_ascii_case_insensitive, contains_ascii_case_insensitive_bytes,
     find_ascii_case_insensitive, html_local_name_is, html_raw_text_end, html_tag_end,
     html_tag_name_range,
 };
@@ -47,163 +42,6 @@ pub(crate) struct SectionParts {
 const FRAGMENT_TARGET_SIZE: usize = 8192;
 const POSFID_PLACEHOLDER: &str = "kindle:pos:fid:ZZZZ:off:ZZZZZZZZZZ";
 const COVER_LANDMARK_MARKER: &str = "kindle:cover-landmark";
-
-fn preserved_style_attributes(source: &str, start: usize, tag_end: usize) -> String {
-    let Some((_, mut cursor, closing)) = html_tag_name_range(source, start, tag_end) else {
-        return String::new();
-    };
-    if closing {
-        return String::new();
-    }
-
-    let bytes = source.as_bytes();
-    let allowed = ["media", "title", "type"];
-    let mut attributes = Vec::new();
-    while cursor < tag_end {
-        while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if cursor >= tag_end || bytes[cursor] == b'/' {
-            break;
-        }
-        let attribute_start = cursor;
-        while cursor < tag_end
-            && !bytes[cursor].is_ascii_whitespace()
-            && !matches!(bytes[cursor], b'=' | b'/' | b'>')
-        {
-            cursor = advance_char(source, cursor);
-        }
-        let attribute_end = cursor;
-        while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if attribute_start == attribute_end || bytes.get(cursor) != Some(&b'=') {
-            continue;
-        }
-        cursor += 1;
-        while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let Some(&value_start_byte) = bytes.get(cursor) else {
-            break;
-        };
-        let (value_start, value_end, quote) = if matches!(value_start_byte, b'"' | b'\'') {
-            let value_start = cursor + 1;
-            let Some(relative_end) = source[value_start..tag_end].find(value_start_byte as char)
-            else {
-                return String::new();
-            };
-            let value_end = value_start + relative_end;
-            cursor = value_end + 1;
-            (value_start, value_end, value_start_byte)
-        } else {
-            let value_start = cursor;
-            while cursor < tag_end && !bytes[cursor].is_ascii_whitespace() && bytes[cursor] != b'>'
-            {
-                cursor = advance_char(source, cursor);
-            }
-            let value_end = if cursor > value_start
-                && bytes[cursor - 1] == b'/'
-                && source[cursor..tag_end].trim().is_empty()
-            {
-                cursor - 1
-            } else {
-                cursor
-            };
-            (value_start, value_end, b'"')
-        };
-        if let Some(name) = allowed
-            .iter()
-            .find(|name| html_local_name_is(source, attribute_start, attribute_end, name))
-        {
-            attributes.push((*name, &source[value_start..value_end], quote));
-        }
-    }
-
-    let mut result = String::new();
-    for (name, value, quote) in attributes {
-        result.push(' ');
-        result.push_str(name);
-        result.push('=');
-        result.push(quote as char);
-        result.push_str(value);
-        result.push(quote as char);
-    }
-    result
-}
-
-fn stylesheet_link_href(source: &str, start: usize, tag_end: usize) -> Option<(usize, usize)> {
-    let bytes = source.as_bytes();
-    let (name_start, name_end, closing) = html_tag_name_range(source, start, tag_end)?;
-    if closing || !html_local_name_is(source, name_start, name_end, "link") {
-        return None;
-    }
-    let mut cursor = name_end;
-    let mut has_stylesheet_rel = false;
-    let mut href = None;
-    while cursor < tag_end {
-        while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if cursor >= tag_end || bytes[cursor] == b'/' {
-            break;
-        }
-        let attribute_start = cursor;
-        while cursor < tag_end
-            && !bytes[cursor].is_ascii_whitespace()
-            && !matches!(bytes[cursor], b'=' | b'/' | b'>')
-        {
-            cursor = advance_char(source, cursor);
-        }
-        let attribute_end = cursor;
-        if attribute_start == attribute_end {
-            cursor = advance_char(source, cursor);
-            continue;
-        }
-        while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if bytes.get(cursor) != Some(&b'=') {
-            continue;
-        }
-        cursor += 1;
-        while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let attribute_name = &source[attribute_start..attribute_end];
-        let quote = *bytes.get(cursor)?;
-        if !matches!(quote, b'"' | b'\'') {
-            let value_start = cursor;
-            while cursor < tag_end && !bytes[cursor].is_ascii_whitespace() {
-                cursor = advance_char(source, cursor);
-            }
-            if attribute_name.eq_ignore_ascii_case("rel") {
-                has_stylesheet_rel = is_stylesheet_rel(&source[value_start..cursor]);
-            } else if attribute_name.eq_ignore_ascii_case("href") {
-                // HTML permits an unquoted attribute value. The value span
-                // remains source-relative so only a resolved stylesheet link
-                // is replaced and all surrounding bytes stay untouched.
-                href = Some((value_start, cursor));
-            }
-            continue;
-        }
-        let value_start = cursor + 1;
-        let value_end = value_start + source[value_start..tag_end].find(quote as char)?;
-        if attribute_name.eq_ignore_ascii_case("rel") {
-            has_stylesheet_rel = is_stylesheet_rel(&source[value_start..value_end]);
-        } else if attribute_name.eq_ignore_ascii_case("href") {
-            href = Some((value_start, value_end));
-        }
-        cursor = value_end + 1;
-    }
-    has_stylesheet_rel.then_some(href).flatten()
-}
-
-fn is_stylesheet_rel(value: &str) -> bool {
-    value
-        .split_whitespace()
-        .any(|token| token.eq_ignore_ascii_case("stylesheet"))
-}
 
 pub(super) fn rewrite_projected_attributes(
     source: String,
@@ -291,9 +129,13 @@ pub(super) fn rewrite_projected_attributes(
             let attribute_name = &source[attribute_start..attribute_end];
             let is_object_data = attribute_name.eq_ignore_ascii_case("data")
                 && html_local_name_is(&source, tag_name_start, tag_name_end, "object");
+            let is_svg_href = attribute_name.eq_ignore_ascii_case("href")
+                && (html_local_name_is(&source, tag_name_start, tag_name_end, "image")
+                    || html_local_name_is(&source, tag_name_start, tag_name_end, "use"));
             let is_asset = attribute_name.eq_ignore_ascii_case("src")
                 || attribute_name.eq_ignore_ascii_case("xlink:href")
-                || is_object_data;
+                || is_object_data
+                || is_svg_href;
             let target = &source[value_start..value_end];
             let replacement = if is_asset {
                 resource_reference(section_href, target, resources)
@@ -351,120 +193,6 @@ pub(super) fn rewrite_projected_attributes(
     }
 }
 
-pub(super) fn rewrite_quoted_attributes(
-    source: String,
-    attribute_names: &[&str],
-    mut replacement: impl FnMut(&str, &str) -> Result<Option<String>>,
-) -> Result<String> {
-    let mut result = None;
-    let bytes = source.as_bytes();
-    let mut scan_cursor = 0;
-    let mut output_cursor = 0;
-    while scan_cursor < source.len() {
-        let Some(relative) = source[scan_cursor..].find('<') else {
-            break;
-        };
-        let tag_start = scan_cursor + relative;
-        if source[tag_start..].starts_with("<!--") {
-            scan_cursor = source[tag_start + 4..]
-                .find("-->")
-                .map_or(source.len(), |end| tag_start + 4 + end + 3);
-            continue;
-        }
-        let Some(tag_end) = html_tag_end(&source, tag_start) else {
-            break;
-        };
-        if let Some(raw_end) = html_raw_text_end(&source, tag_start, tag_end) {
-            scan_cursor = raw_end;
-            continue;
-        }
-        let Some((tag_name_start, tag_name_end, closing)) =
-            html_tag_name_range(&source, tag_start, tag_end)
-        else {
-            scan_cursor = tag_end + 1;
-            continue;
-        };
-        let mut cursor = tag_name_end;
-        if closing {
-            scan_cursor = tag_end + 1;
-            continue;
-        }
-        while cursor < tag_end {
-            while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
-            if cursor >= tag_end || bytes[cursor] == b'/' {
-                break;
-            }
-            let attribute_start = cursor;
-            while cursor < tag_end
-                && !bytes[cursor].is_ascii_whitespace()
-                && !matches!(bytes[cursor], b'=' | b'/' | b'>')
-            {
-                cursor = advance_css_char(&source, cursor);
-            }
-            let attribute_end = cursor;
-            while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
-            if attribute_start == attribute_end || bytes.get(cursor) != Some(&b'=') {
-                continue;
-            }
-            cursor += 1;
-            while cursor < tag_end && bytes[cursor].is_ascii_whitespace() {
-                cursor += 1;
-            }
-            let Some(&quote) = bytes.get(cursor) else {
-                break;
-            };
-            if !matches!(quote, b'"' | b'\'') {
-                while cursor < tag_end
-                    && !bytes[cursor].is_ascii_whitespace()
-                    && !matches!(bytes[cursor], b'/' | b'>')
-                {
-                    cursor = advance_css_char(&source, cursor);
-                }
-                continue;
-            }
-            let value_start = cursor + 1;
-            let Some(value_end_relative) = source[value_start..tag_end].find(quote as char) else {
-                scan_cursor = source.len();
-                break;
-            };
-            let value_end = value_start + value_end_relative;
-            let wanted = attribute_names.iter().find_map(|name| {
-                let name = name.strip_suffix('=')?;
-                source[attribute_start..attribute_end]
-                    .eq_ignore_ascii_case(name)
-                    .then_some(name)
-            });
-            let is_object_data = wanted == Some("data")
-                && html_local_name_is(&source, tag_name_start, tag_name_end, "object");
-            if wanted.is_some() && (wanted != Some("data") || is_object_data) {
-                if let Some(value) = replacement(&source, &source[value_start..value_end])? {
-                    let output = result
-                        .get_or_insert_with(|| String::with_capacity(source.len() + value.len()));
-                    output.push_str(&source[output_cursor..value_start]);
-                    output.push_str(&value);
-                    output.push(quote as char);
-                    output_cursor = value_end + 1;
-                }
-            }
-            cursor = value_end + 1;
-        }
-        if scan_cursor == source.len() {
-            break;
-        }
-        scan_cursor = tag_end + 1;
-    }
-    if let Some(mut result) = result {
-        result.push_str(&source[output_cursor..]);
-        Ok(result)
-    } else {
-        Ok(source)
-    }
-}
-
 pub(super) fn generated_aid(index: usize) -> String {
     to_base32_unpadded(u32::try_from(index).expect("generated section index fits in u32"))
 }
@@ -481,108 +209,6 @@ fn to_base32_unpadded(mut value: u32) -> String {
     }
     digits.reverse();
     String::from_utf8(digits).expect("base32 alphabet is ASCII")
-}
-
-#[derive(Debug)]
-pub(super) struct LayoutClassRewriteResult {
-    pub(super) source: String,
-    pub(super) uses_generated_layout: bool,
-}
-
-pub(super) fn rewrite_layout_class_for_document(
-    source: String,
-    section_index: usize,
-    has_explicit_layout: bool,
-) -> LayoutClassRewriteResult {
-    const LAYOUT_CLASS: &str = "kf8-layout";
-    let source = rewrite_body_aid(source, &generated_aid(section_index));
-    let mut uses_generated_layout = source.contains(LAYOUT_CLASS);
-    // KindleGen keeps document-level `vrtl`/`hltr` classes and inline writing
-    // mode declarations intact.  Do not add a book-wide fallback class to
-    // those documents: a navigation document can intentionally be horizontal
-    // while the reflowable body is vertical, and a shared class would let
-    // calibre's CSS normalizer merge the two declarations.
-    if has_explicit_layout {
-        return LayoutClassRewriteResult {
-            source,
-            uses_generated_layout,
-        };
-    }
-    let Some(html_start) = find_ascii_case_insensitive(&source, "<html", 0) else {
-        return LayoutClassRewriteResult {
-            source,
-            uses_generated_layout,
-        };
-    };
-    let Some(html_end_relative) = source[html_start..].find('>') else {
-        return LayoutClassRewriteResult {
-            source,
-            uses_generated_layout,
-        };
-    };
-    let html_end = html_start + html_end_relative;
-    let tag = &source[html_start..=html_end];
-    if let Some(class_relative) = find_ascii_case_insensitive(tag, "class=", 0) {
-        let value_start = html_start + class_relative + 6;
-        let Some(quote) = source.as_bytes().get(value_start).copied() else {
-            return LayoutClassRewriteResult {
-                source,
-                uses_generated_layout,
-            };
-        };
-        if !matches!(quote, b'"' | b'\'') {
-            return LayoutClassRewriteResult {
-                source,
-                uses_generated_layout,
-            };
-        }
-        let content_start = value_start + 1;
-        let Some(content_end_relative) = source[content_start..].find(quote as char) else {
-            return LayoutClassRewriteResult {
-                source,
-                uses_generated_layout,
-            };
-        };
-        let content_end = content_start + content_end_relative;
-        if source[content_start..content_end]
-            .split_whitespace()
-            .any(|class| class == LAYOUT_CLASS)
-        {
-            return LayoutClassRewriteResult {
-                source,
-                uses_generated_layout,
-            };
-        }
-        let mut result = String::with_capacity(source.len() + LAYOUT_CLASS.len() + 1);
-        result.push_str(&source[..content_end]);
-        if content_end > content_start {
-            result.push(' ');
-        }
-        result.push_str(LAYOUT_CLASS);
-        result.push_str(&source[content_end..]);
-        uses_generated_layout = true;
-        LayoutClassRewriteResult {
-            source: result,
-            uses_generated_layout,
-        }
-    } else {
-        let insert_at = if tag.ends_with("/>") {
-            html_end - 1
-        } else {
-            html_end
-        };
-        let mut result = String::with_capacity(source.len() + LAYOUT_CLASS.len() + 15);
-        result.push_str(&source[..insert_at]);
-        result.push_str(" class=\"");
-        result.push_str(LAYOUT_CLASS);
-        result.push('"');
-        result.push_str(&source[insert_at..]);
-        uses_generated_layout = true;
-        LayoutClassRewriteResult {
-            source: result,
-            uses_generated_layout,
-        }
-    }
 }
 
 /// Materialize ordered-list semantics for the KF8 HTML projection.
@@ -781,26 +407,6 @@ fn append_attribute(tag: &[u8], name: &[u8], value: &[u8]) -> Vec<u8> {
     output
 }
 
-pub(super) fn section_has_explicit_layout(
-    section: &KindleSection,
-    resources: &ResourceIndex<'_>,
-) -> bool {
-    if contains_any_ascii_case_insensitive(&section.source_xhtml, &["vrtl", "hltr", "writing-mode"])
-    {
-        return true;
-    }
-    section.referenced_styles.iter().any(|style_href| {
-        let Some(resolved) = resolve_path(&section.href, style_href) else {
-            return false;
-        };
-        resources.any_css(&resolved, |resource| {
-            contains_ascii_case_insensitive_bytes(&resource.data, b"vrtl")
-                || contains_ascii_case_insensitive_bytes(&resource.data, b"hltr")
-                || contains_ascii_case_insensitive_bytes(&resource.data, b"writing-mode")
-        })
-    })
-}
-
 /// Lower one effective pre-paginated spine item to the KF8 page-flow shape.
 ///
 /// A page presentation SVG is a secondary flow; the section that remains in
@@ -971,149 +577,6 @@ pub(super) fn find_html_attribute(tag: &str, name: &str) -> Option<usize> {
     None
 }
 
-pub(super) fn generated_layout_css(layout: KindleLayout) -> String {
-    let writing_mode = match layout.writing_mode {
-        WritingMode::HorizontalTb => "horizontal-tb",
-        WritingMode::VerticalRl => "vertical-rl",
-        WritingMode::VerticalLr => "vertical-lr",
-    };
-    let direction = match layout.direction {
-        Direction::Default => "",
-        Direction::Ltr => "\n  direction: ltr;",
-        Direction::Rtl => "\n  direction: rtl;",
-    };
-    format!(
-        "\n/* KF8 generated layout fallback for documents without explicit layout. */\nhtml.kf8-layout {{\n  writing-mode: {writing_mode};\n  -webkit-writing-mode: {writing_mode};\n  -epub-writing-mode: {writing_mode};{direction}\n}}\n"
-    )
-}
-
-pub(super) fn rewrite_stylesheet_links_with_references(
-    source: String,
-    section_href: &str,
-    css_resources: &CssResourceIndex<'_>,
-    referenced_styles: Option<&[String]>,
-) -> String {
-    let mut result = None;
-    let mut scan_cursor = 0;
-    let mut output_cursor = 0;
-    let mut inline_style_index = 0usize;
-    let mut referenced_style_index = 0usize;
-    let mut seen_links = HashSet::new();
-    while scan_cursor < source.len() {
-        if source.as_bytes()[scan_cursor] != b'<' {
-            scan_cursor = advance_css_char(&source, scan_cursor);
-            continue;
-        }
-        if source[scan_cursor..].starts_with("<!--") {
-            scan_cursor = source[scan_cursor + 4..]
-                .find("-->")
-                .map_or(source.len(), |relative| scan_cursor + 4 + relative + 3);
-            continue;
-        }
-        let Some(tag_end) = html_tag_end(&source, scan_cursor) else {
-            break;
-        };
-        if let Some((name_start, name_end, closing)) =
-            html_tag_name_range(&source, scan_cursor, tag_end)
-        {
-            let self_closing = source[..tag_end].trim_end().ends_with('/');
-            if !closing
-                && !self_closing
-                && html_local_name_is(&source, name_start, name_end, "style")
-            {
-                if let Some(raw_end) = html_raw_text_end(&source, scan_cursor, tag_end) {
-                    let inline_reference = referenced_styles
-                        .and_then(|styles| styles.get(referenced_style_index).cloned())
-                        .unwrap_or_else(|| inline_style_href(section_href, inline_style_index).1);
-                    inline_style_index += 1;
-                    if referenced_styles.is_some() {
-                        referenced_style_index += 1;
-                    }
-                    if let Some(flow_number) =
-                        css_flow_number(section_href, &inline_reference, css_resources)
-                    {
-                        let mut replacement = format!(
-                            "<link rel=\"stylesheet\" href=\"{}\"",
-                            stylesheet_flow_reference(flow_number)
-                        );
-                        replacement.push_str(&preserved_style_attributes(
-                            &source,
-                            scan_cursor,
-                            tag_end,
-                        ));
-                        replacement.push_str("/>");
-                        let output = result.get_or_insert_with(|| {
-                            String::with_capacity(source.len() + replacement.len())
-                        });
-                        output.push_str(&source[output_cursor..scan_cursor]);
-                        output.push_str(&replacement);
-                        output_cursor = raw_end;
-                    }
-                    scan_cursor = raw_end;
-                    continue;
-                }
-            }
-        }
-        if let Some(raw_end) = html_raw_text_end(&source, scan_cursor, tag_end) {
-            // HTML script/style contents are raw text. Do not interpret a
-            // literal <link ...> example inside either element as markup.
-            scan_cursor = raw_end;
-            continue;
-        }
-        let Some((href_start, href_end)) = stylesheet_link_href(&source, scan_cursor, tag_end)
-        else {
-            scan_cursor = tag_end + 1;
-            continue;
-        };
-        let value = &source[href_start..href_end];
-        let path = value.split(['#', '?']).next().unwrap_or(value);
-        if referenced_styles.is_some() && seen_links.insert(value.to_owned()) {
-            referenced_style_index += 1;
-        }
-        if let Some(flow_number) = css_flow_number(section_href, path, css_resources) {
-            // Only an actual stylesheet link is rewritten. Its document
-            // scope and source order are transport contracts; unrelated
-            // href attributes must remain byte-for-byte unchanged. Resource
-            // resolution, not the filename suffix, identifies CSS here.
-            let replacement = stylesheet_flow_reference(flow_number);
-            let output = result
-                .get_or_insert_with(|| String::with_capacity(source.len() + replacement.len()));
-            output.push_str(&source[output_cursor..href_start]);
-            output.push_str(&replacement);
-            output_cursor = href_end;
-        }
-        scan_cursor = tag_end + 1;
-    }
-    if let Some(mut result) = result {
-        result.push_str(&source[output_cursor..]);
-        result
-    } else {
-        source
-    }
-}
-
-pub(super) fn rewrite_layout_fallback_link(source: String, flow_number: u32) -> String {
-    let link = format!(
-        "<link rel=\"stylesheet\" href=\"{}\"/>",
-        stylesheet_flow_reference(flow_number)
-    );
-    if let Some(position) = find_ascii_case_insensitive(&source, "</head>", 0) {
-        let mut result = String::with_capacity(source.len() + link.len());
-        result.push_str(&source[..position]);
-        result.push_str(&link);
-        result.push_str(&source[position..]);
-        result
-    } else if let Some(position) = find_ascii_case_insensitive(&source, "<body", 0) {
-        let mut result = String::with_capacity(source.len() + link.len());
-        result.push_str(&source[..position]);
-        result.push_str(&link);
-        result.push_str(&source[position..]);
-        result
-    } else {
-        format!("{link}{source}")
-    }
-}
-
 pub(super) fn rewrite_internal_links(
     source: String,
     section_href: &str,
@@ -1128,7 +591,11 @@ pub(super) fn rewrite_internal_links(
         ));
     }
     let mut pending = Vec::new();
-    let rewritten = rewrite_quoted_attributes(source, &["href="], |_source, target| {
+    let rewritten = rewrite_quoted_attributes(source, &["href="], |_source, tag_name, target| {
+        let tag_name = tag_name.rsplit(':').next().unwrap_or(tag_name);
+        if tag_name.eq_ignore_ascii_case("image") || tag_name.eq_ignore_ascii_case("use") {
+            return Ok(None);
+        }
         // CSS is a non-document transport resource only when it resolves in
         // the planned graph. Do not infer that role from a filename suffix;
         // extensionless CSS resources are valid and must not become anchors.
@@ -1198,18 +665,21 @@ pub(super) fn materialize_internal_links(
         .map(|section| section.href.clone())
         .collect::<Vec<_>>();
     for (section_index, (section, pending)) in sections.iter_mut().zip(pending_links).enumerate() {
-        let original_source = std::mem::take(&mut section.source_xhtml);
+        // The source is only needed to locate placeholders. Rebuilding the
+        // complete XHTML here creates a temporary copy that is discarded by
+        // build_geometry immediately after materialization.
+        let source = section.source_xhtml.as_str();
         let mut cursor = 0;
-        let mut output = String::with_capacity(original_source.len());
+        let mut context_index = 0;
+        let mut removed_before = 0;
         for target in pending {
-            let Some(relative) = original_source[cursor..].find(POSFID_PLACEHOLDER) else {
+            let Some(relative) = source[cursor..].find(POSFID_PLACEHOLDER) else {
                 return Err(crate::error::Error::Output(format!(
                     "internal link placeholder is missing in generated document {}",
                     generated_section_path(section_index)
                 )));
             };
             let start = cursor + relative;
-            output.push_str(&original_source[cursor..start]);
             let target_href = if let Some(fragment) = target.fragment.as_deref() {
                 format!(
                     "{}#{fragment}",
@@ -1233,12 +703,12 @@ pub(super) fn materialize_internal_links(
                 &mut section_parts[section_index],
                 start,
                 replacement.as_bytes(),
+                &mut context_index,
+                &mut removed_before,
             )?;
-            output.push_str(&replacement);
             cursor = start + POSFID_PLACEHOLDER.len();
         }
-        output.push_str(&original_source[cursor..]);
-        section.source_xhtml = output;
+        drop(std::mem::take(&mut section.source_xhtml));
     }
     Ok(())
 }
@@ -1247,17 +717,16 @@ fn replace_section_part_bytes(
     parts: &mut SectionParts,
     source_start: usize,
     replacement: &[u8],
+    context_index: &mut usize,
+    removed_before: &mut usize,
 ) -> Result<()> {
     let source_end = source_start.checked_add(replacement.len()).ok_or_else(|| {
         crate::error::Error::Output("internal link replacement range is invalid".to_owned())
     })?;
     let mut source_cursor = source_start;
     let mut replacement_cursor = 0;
-    let mut context_index = 0;
-    let mut removed_before = 0usize;
-
     while source_cursor < source_end {
-        while let Some(context) = parts.fragment_contexts.get(context_index) {
+        while let Some(context) = parts.fragment_contexts.get(*context_index) {
             if context.source_end > source_cursor {
                 break;
             }
@@ -1269,21 +738,21 @@ fn replace_section_part_bytes(
                         "internal link fragment range is invalid".to_owned(),
                     )
                 })?;
-            removed_before = removed_before.checked_add(removed).ok_or_else(|| {
+            *removed_before = removed_before.checked_add(removed).ok_or_else(|| {
                 crate::error::Error::Output("internal link fragment range is invalid".to_owned())
             })?;
-            context_index += 1;
+            *context_index += 1;
         }
 
         let next_end = parts
             .fragment_contexts
-            .get(context_index)
+            .get(*context_index)
             .map(|context| context.source_start)
             .filter(|&start| start > source_cursor)
             .unwrap_or(source_end)
             .min(source_end);
 
-        if let Some(context) = parts.fragment_contexts.get(context_index) {
+        if let Some(context) = parts.fragment_contexts.get(*context_index) {
             if context.source_start <= source_cursor {
                 let copy_end = source_end.min(context.source_end);
                 let copy_len = copy_end - source_cursor;
@@ -1293,7 +762,7 @@ fn replace_section_part_bytes(
                         "internal link fragment range is invalid".to_owned(),
                     )
                 })?;
-                let target = parts.fragments.get_mut(context_index).ok_or_else(|| {
+                let target = parts.fragments.get_mut(*context_index).ok_or_else(|| {
                     crate::error::Error::Output(
                         "internal link fragment context is invalid".to_owned(),
                     )
@@ -1313,7 +782,7 @@ fn replace_section_part_bytes(
         }
 
         let copy_len = next_end - source_cursor;
-        let target_start = source_cursor.checked_sub(removed_before).ok_or_else(|| {
+        let target_start = source_cursor.checked_sub(*removed_before).ok_or_else(|| {
             crate::error::Error::Output("internal link skeleton range is invalid".to_owned())
         })?;
         let target_end = target_start.checked_add(copy_len).ok_or_else(|| {

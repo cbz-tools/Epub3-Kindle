@@ -33,28 +33,6 @@ pub(crate) fn find_ascii_case_insensitive(
         .map(|relative| start + relative)
 }
 
-pub(crate) fn contains_any_ascii_case_insensitive(source: &str, needles: &[&str]) -> bool {
-    let bytes = source.as_bytes();
-    bytes.iter().enumerate().any(|(start, _)| {
-        needles.iter().any(|needle| {
-            let needle = needle.as_bytes();
-            !needle.is_empty()
-                && bytes
-                    .get(start..start.saturating_add(needle.len()))
-                    .is_some_and(|window| ascii_bytes_eq_ignore_case(window, needle))
-        })
-    })
-}
-
-pub(crate) fn contains_ascii_case_insensitive_bytes(source: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    source
-        .windows(needle.len())
-        .any(|window| ascii_bytes_eq_ignore_case(window, needle))
-}
-
 fn ascii_bytes_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len()
         && left

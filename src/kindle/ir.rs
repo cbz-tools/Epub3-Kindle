@@ -19,7 +19,6 @@ pub struct KindleResource {
     pub data: Vec<u8>,
 }
 
-pub(crate) type KindleDirection = Direction;
 pub(crate) type KindlePageProgression = PageProgression;
 pub(crate) type KindleWritingMode = WritingMode;
 
@@ -30,10 +29,11 @@ pub struct KindleMetadata {
     pub authors: Vec<String>,
     pub contributors: Vec<String>,
     pub language: Option<String>,
-    // Semantic metadata is retained in the Kindle IR even though the current
-    // minimal EXTH policy deliberately does not serialize an identifier.
-    #[allow(dead_code)]
+    // Semantic source metadata is retained through the target projection.
     pub identifier: Option<String>,
+    pub publication_date: Option<String>,
+    #[allow(dead_code)]
+    pub modified: Option<String>,
     pub publisher: Option<String>,
     pub description: Option<String>,
     pub cover_resource_id: Option<String>,

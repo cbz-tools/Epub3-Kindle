@@ -4,15 +4,14 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::Path;
 
+use crate::error::{Error, Result};
+use crate::xhtml::path::normalize_path_lossy as normalize_path;
 use quick_xml::events::Event;
 use quick_xml::name::{Namespace, ResolveResult};
 use quick_xml::reader::NsReader;
-use zip::ZipArchive;
 
-use crate::error::{Error, Result};
-use crate::xhtml::path::normalize_path_lossy as normalize_path;
-
-use super::package::{read_zip_entry, resolve_href};
+use super::package::resolve_href;
+use super::package_archive::{BoundedZipArchive, read_zip_entry};
 
 const IDPF_FONT_OBFUSCATION: &str = "http://www.idpf.org/2008/embedding";
 
@@ -23,14 +22,11 @@ struct EncryptionTarget {
 }
 
 pub(super) fn load_font_obfuscation<R: Read + std::io::Seek>(
-    archive: &mut ZipArchive<R>,
+    archive: &mut BoundedZipArchive<R>,
     parsed: &super::opf::ParsedOpf,
     opf_base: &Path,
 ) -> Result<HashMap<String, [u8; 20]>> {
-    if !archive
-        .file_names()
-        .any(|name| name == "META-INF/encryption.xml")
-    {
+    if !archive.contains("META-INF/encryption.xml") {
         return Ok(HashMap::new());
     }
     let encryption = read_zip_entry(archive, "META-INF/encryption.xml")?;
@@ -62,14 +58,13 @@ pub(super) fn load_font_obfuscation<R: Read + std::io::Seek>(
             )));
         }
         let path = normalized_target;
-        // Validate the ZIP target explicitly, even when it is not otherwise
-        // needed by the current manifest-loading path.
-        read_zip_entry(archive, &path).map_err(|error| match error {
-            Error::InvalidEpub(message) => {
-                Error::InvalidEpub(format!("missing encrypted resource {path}: {message}"))
-            }
-            other => other,
-        })?;
+        // Validate the ZIP target without decompressing it a second time;
+        // resource loading performs the bounded decode below.
+        if !archive.contains(&path) {
+            return Err(Error::InvalidEpub(format!(
+                "missing encrypted resource {path}"
+            )));
+        }
         let key = unique_identifier_key(parsed)?;
         if keys.insert(path.clone(), key).is_some() {
             return Err(Error::InvalidEpub(format!(
@@ -397,12 +392,10 @@ fn unique_identifier_key(parsed: &super::opf::ParsedOpf) -> Result<[u8; 20]> {
     Ok(sha1_digest(normalized.as_bytes()))
 }
 
-pub(super) fn deobfuscate_font(source: &[u8], key: &[u8; 20]) -> Vec<u8> {
-    let mut output = source.to_vec();
-    for (index, byte) in output.iter_mut().take(1040).enumerate() {
+pub(super) fn deobfuscate_font(source: &mut [u8], key: &[u8; 20]) {
+    for (index, byte) in source.iter_mut().take(1040).enumerate() {
         *byte ^= key[index % key.len()];
     }
-    output
 }
 
 fn sha1_digest(input: &[u8]) -> [u8; 20] {
