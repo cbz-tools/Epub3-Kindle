@@ -4,8 +4,8 @@ use super::css_flow::{CssResourceIndex, ResourceIndex, SectionIndex, referenced_
 use super::format::to_base32_fixed;
 use super::position::{AnchorIndex, assign_aids};
 use super::rawml::{
-    PendingInternalLink, lower_pre_paginated_section, rewrite_body_aid, rewrite_internal_links,
-    rewrite_projected_attributes,
+    LinkRewriteContext, PendingInternalLink, lower_pre_paginated_section, rewrite_body_aid,
+    rewrite_internal_links, rewrite_projected_attributes,
 };
 use super::rawml_styles::rewrite_stylesheet_links_with_references;
 use crate::WarningCollector;
@@ -174,12 +174,14 @@ fn prepare_link_materialization(
         let source = std::mem::take(&mut section.source_xhtml);
         let (source, links) = rewrite_internal_links(
             source,
-            &section.href,
-            section_lookup,
-            section_number,
-            anchor_indices,
-            css_resources,
-            &section.dropped_stylesheets,
+            LinkRewriteContext {
+                section_href: &section.href,
+                section_index: section_lookup,
+                section_number,
+                anchor_indices,
+                css_resources,
+                dropped_stylesheets: &section.dropped_stylesheets,
+            },
             warnings,
         )?;
         section.source_xhtml = source;

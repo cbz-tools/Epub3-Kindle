@@ -2384,9 +2384,9 @@ fn base64(data: &[u8]) -> String {
         let second = chunk.get(1).copied().unwrap_or(0);
         let third = chunk.get(2).copied().unwrap_or(0);
         output.push(ALPHABET[(first >> 2) as usize] as char);
-        output.push(ALPHABET[((first & 0x03) << 4 | second >> 4) as usize] as char);
+        output.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
         output.push(if chunk.len() > 1 {
-            ALPHABET[((second & 0x0f) << 2 | third >> 6) as usize] as char
+            ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char
         } else {
             '='
         });

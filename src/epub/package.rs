@@ -17,7 +17,7 @@ use crate::book::Book;
 use crate::error::Result;
 use crate::xhtml::path::resolve_path;
 
-use content::{DiscoveredContent, discover_content};
+use content::{ContentDiscoveryContext, DiscoveredContent, discover_content};
 use manifest::{LoadedPackage, load_package};
 use navigation::load_navigation;
 use resources::{LoadedResources, load_resources};
@@ -59,13 +59,15 @@ pub fn parse_epub_with_warnings(input: &[u8], warnings: &mut WarningCollector) -
         document_writing_modes,
         fixed_page_viewports,
     } = discover_content(
-        &parsed,
-        &base,
+        ContentDiscoveryContext {
+            parsed: &parsed,
+            base: &base,
+            manifest_id_index: &manifest_id_index,
+            spine_content_source_indices: &spine_content_source_indices,
+            dropped_css_hrefs: &dropped_css_hrefs,
+        },
         &mut resources,
         &mut xhtml,
-        &manifest_id_index,
-        &spine_content_source_indices,
-        &dropped_css_hrefs,
         warnings,
     )?;
     let styles = validate_and_parse_styles(&content, &resources, &base, warnings)?;

@@ -24,16 +24,28 @@ pub(super) struct PendingInternalLink {
     fragment: Option<String>,
 }
 
+pub(super) struct LinkRewriteContext<'a, 'resource> {
+    pub(super) section_href: &'a str,
+    pub(super) section_index: &'a SectionIndex,
+    pub(super) section_number: usize,
+    pub(super) anchor_indices: &'a [position::AnchorIndex],
+    pub(super) css_resources: &'a CssResourceIndex<'resource>,
+    pub(super) dropped_stylesheets: &'a [String],
+}
+
 pub(super) fn rewrite_internal_links(
     source: String,
-    section_href: &str,
-    section_index: &SectionIndex,
-    section_number: usize,
-    anchor_indices: &[position::AnchorIndex],
-    css_resources: &CssResourceIndex<'_>,
-    dropped_stylesheets: &[String],
+    context: LinkRewriteContext<'_, '_>,
     warnings: &mut WarningCollector,
 ) -> Result<(String, Vec<PendingInternalLink>)> {
+    let LinkRewriteContext {
+        section_href,
+        section_index,
+        section_number,
+        anchor_indices,
+        css_resources,
+        dropped_stylesheets,
+    } = context;
     if anchor_indices.len() != section_index.len() || section_number >= anchor_indices.len() {
         return Err(crate::error::Error::Output(
             "internal link anchor indexes do not match sections".to_owned(),

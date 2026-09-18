@@ -21,16 +21,27 @@ pub(super) struct DiscoveredContent {
     pub(super) fixed_page_viewports: Vec<Option<String>>,
 }
 
+pub(super) struct ContentDiscoveryContext<'a> {
+    pub(super) parsed: &'a super::super::opf::ParsedOpf,
+    pub(super) base: &'a Path,
+    pub(super) manifest_id_index: &'a ManifestIdIndex,
+    pub(super) spine_content_source_indices: &'a [Option<usize>],
+    pub(super) dropped_css_hrefs: &'a HashSet<String>,
+}
+
 pub(super) fn discover_content(
-    parsed: &super::super::opf::ParsedOpf,
-    base: &Path,
+    context: ContentDiscoveryContext<'_>,
     resources: &mut Resources,
     xhtml: &mut HashMap<String, String>,
-    manifest_id_index: &ManifestIdIndex,
-    spine_content_source_indices: &[Option<usize>],
-    dropped_css_hrefs: &HashSet<String>,
     warnings: &mut WarningCollector,
 ) -> Result<DiscoveredContent> {
+    let ContentDiscoveryContext {
+        parsed,
+        base,
+        manifest_id_index,
+        spine_content_source_indices,
+        dropped_css_hrefs,
+    } = context;
     let mut occupied_hrefs = resources
         .items
         .iter()

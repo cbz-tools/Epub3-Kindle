@@ -14,7 +14,7 @@ use crate::xhtml::scan::{
 
 pub(super) use super::rawml_layout::lower_pre_paginated_section;
 pub(super) use super::rawml_links::{
-    PendingInternalLink, materialize_internal_links, rewrite_internal_links,
+    LinkRewriteContext, PendingInternalLink, materialize_internal_links, rewrite_internal_links,
 };
 pub(super) use super::rawml_structure::{
     generated_aid, materialize_ordered_list_values, rewrite_body_aid,
