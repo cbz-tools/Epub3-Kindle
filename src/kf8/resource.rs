@@ -131,6 +131,8 @@ pub(crate) fn is_image_resource(resource: &KindleResource) -> bool {
 
 pub(crate) fn is_font_resource(resource: &KindleResource) -> bool {
     [
+        "application/font-woff",
+        "font/woff",
         "application/font-sfnt",
         "application/x-font-ttf",
         "font/sfnt",
@@ -144,7 +146,7 @@ pub(crate) fn is_font_resource(resource: &KindleResource) -> bool {
 }
 
 pub(crate) fn serialize_font_resource(data: Vec<u8>) -> Result<Vec<u8>> {
-    if !is_sfnt_font(&data) {
+    if !is_sfnt_font(&data) && !is_woff_font(&data) {
         return Ok(data);
     }
     let uncompressed_length = u32::try_from(data.len())
@@ -174,6 +176,10 @@ fn is_sfnt_font(data: &[u8]) -> bool {
         data.get(..4),
         Some(b"OTTO") | Some(b"true") | Some(b"ttcf") | Some([0, 1, 0, 0])
     )
+}
+
+fn is_woff_font(data: &[u8]) -> bool {
+    data.starts_with(b"wOFF")
 }
 
 pub(crate) fn is_binary_resource(resource: &KindleResource) -> bool {

@@ -21,12 +21,35 @@ pub struct ConvertOptions {
 }
 
 impl ConvertOptions {
-    /// Convert one EPUB path, selecting `.azw3` or `.mobi` from the output extension.
+    /// Converts an EPUB file, selecting AZW3 or Dual MOBI from the output extension.
+    ///
+    /// `.azw3` produces KF8-only AZW3; `.mobi` produces a Dual MOBI with a
+    /// minimal KF7 compatibility section and the canonical KF8 reading
+    /// rendition. The output is atomically replaced after serialization
+    /// succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported input or output extension, input or
+    /// output I/O failure, unsupported or invalid EPUB content, or KF8/MOBI
+    /// construction and serialization failure.
     pub fn convert_file(&self, input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<()> {
         super::file::convert_file(input, output, self)
     }
 
-    /// Convert one EPUB path and return any warnings collected during conversion.
+    /// Converts an EPUB file and returns any warnings collected during conversion.
+    ///
+    /// `.azw3` produces KF8-only AZW3; `.mobi` produces a Dual MOBI with a
+    /// minimal KF7 compatibility section and the canonical KF8 reading
+    /// rendition. The outcome value is `()` because output is written to the
+    /// destination path; inspect warning details with
+    /// [`ConversionOutcome::warnings`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported input or output extension, input or
+    /// output I/O failure, unsupported or invalid EPUB content, or KF8/MOBI
+    /// construction and serialization failure.
     pub fn convert_file_with_warnings(
         &self,
         input: impl AsRef<Path>,

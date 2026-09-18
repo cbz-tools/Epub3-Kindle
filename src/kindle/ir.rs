@@ -65,9 +65,18 @@ pub struct KindleSection {
     pub id: String,
     pub href: String,
     pub source_xhtml: String,
+    /// Whether the source spine document itself is an SVG resource rather
+    /// than XHTML that happens to contain inline SVG markup.
+    pub is_svg_document: bool,
     /// Stylesheet hrefs linked by this document, kept in the Kindle IR so the
     /// KF8 writer does not emit unreferenced manifest CSS into the CSS flow.
     pub referenced_styles: Vec<String>,
+    /// Canonical hrefs of linked stylesheets deliberately omitted during EPUB
+    /// loading; only these missing stylesheet links bypass document lookup.
+    pub dropped_stylesheets: Vec<String>,
+    /// Numeric dimensions from this section's explicit XHTML viewport, when
+    /// present. Used only as evidence for fixed-page presentation lowering.
+    pub page_viewport: Option<String>,
     pub linear: bool,
     pub layout: KindleLayoutSemantic,
     pub rendition: RenditionSemantics,

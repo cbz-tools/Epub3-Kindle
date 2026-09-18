@@ -96,7 +96,7 @@ pub struct PositionMap {
     pub fragments: Vec<PositionMapFragment>,
     sections: Vec<SectionPosition>,
     section_by_href: HashMap<String, usize>,
-    entry_by_section_fragment: HashMap<(usize, String), usize>,
+    entry_by_section_fragment: Vec<HashMap<String, usize>>,
     section_first_fragment: Vec<Option<usize>>,
 }
 
@@ -196,6 +196,7 @@ impl PositionMap {
                 return Err(Error::Output("each section requires one FRAG".to_owned()));
             }
             let mut fragment_cursor = 0;
+            map.entry_by_section_fragment.push(HashMap::new());
             for tag in tags(&section.source_xhtml) {
                 let Some(aid) = tag.attribute("aid") else {
                     continue;
@@ -247,8 +248,8 @@ impl PositionMap {
                     .or_else(|| tag.attribute("name"))
                     .map(str::to_owned);
                 if let Some(element_id) = element_id.as_ref() {
-                    map.entry_by_section_fragment
-                        .entry((section_index, element_id.clone()))
+                    map.entry_by_section_fragment[section_index]
+                        .entry(element_id.clone())
                         .or_insert(entry_index);
                 }
                 map.entries.push(PositionMapEntry {
@@ -308,7 +309,8 @@ impl PositionMap {
         if let Some(fragment) = fragment.filter(|fragment| !fragment.is_empty()) {
             let entry = self
                 .entry_by_section_fragment
-                .get(&(section_index, fragment.to_owned()))
+                .get(section_index)
+                .and_then(|section_entries| section_entries.get(fragment))
                 .and_then(|&entry_index| self.entries.get(entry_index))
                 .ok_or_else(|| {
                     Error::Output(format!("position fragment does not resolve: {href}"))

@@ -990,7 +990,7 @@ fn batch2_negative_css_constructs_remain_isolated() {
                 .any(|warning| warning.code == epub3_kindle::WarningCode::W004
                     && warning.message.contains(reason)),
             "warning must identify the isolated unsupported CSS reason {reason:?}: {:?}",
-            outcome.warnings
+            outcome.warnings()
         );
     }
 }

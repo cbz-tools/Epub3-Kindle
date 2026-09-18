@@ -123,35 +123,17 @@ impl ViewportQuality {
     }
 }
 
-pub(super) fn validate_viewport(source: &str) -> Result<ViewportQuality> {
+/// Validate every fixed-page viewport declaration and project a numeric
+/// resolution when all declarations agree. A nonnumeric or conflicting
+/// declaration suppresses the projection, but does not stop validation of
+/// later declarations.
+pub(super) fn fixed_page_viewport(source: &str) -> Result<(ViewportQuality, Option<String>)> {
     let mut reader = Reader::from_reader(Cursor::new(source.as_bytes()));
     let mut buffer = Vec::new();
     let mut quality = ViewportQuality::Canonical;
-    loop {
-        match reader.read_event_into(&mut buffer)? {
-            Event::Start(event) | Event::Empty(event)
-                if local_name_ref(event.name().as_ref()).eq_ignore_ascii_case("meta")
-                    && attr(&event, "name")
-                        .is_some_and(|value| value.trim().eq_ignore_ascii_case("viewport")) =>
-            {
-                quality = quality.combine(validate_viewport_attributes(&event)?);
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-        buffer.clear();
-    }
-    Ok(quality)
-}
-
-/// Return a numeric fixed-page resolution only when every viewport declaration
-/// in this document agrees.  Device-relative dimensions and mixed declarations
-/// are intentionally not normalized into a publication-level EXTH value.
-pub(super) fn fixed_page_viewport_resolution(source: &str) -> Result<Option<String>> {
-    let mut reader = Reader::from_reader(Cursor::new(source.as_bytes()));
-    let mut buffer = Vec::new();
     let mut resolution = None;
     let mut saw_viewport = false;
+    let mut resolution_available = true;
     loop {
         match reader.read_event_into(&mut buffer)? {
             Event::Start(event) | Event::Empty(event)
@@ -160,7 +142,7 @@ pub(super) fn fixed_page_viewport_resolution(source: &str) -> Result<Option<Stri
                         .is_some_and(|value| value.trim().eq_ignore_ascii_case("viewport")) =>
             {
                 saw_viewport = true;
-                validate_viewport_attributes(&event)?;
+                quality = quality.combine(validate_viewport_attributes(&event)?);
                 let Some(content) = event.attributes().flatten().find_map(|attribute| {
                     (local_name_ref(attribute.key.as_ref()).eq_ignore_ascii_case("content"))
                         .then(|| {
@@ -171,25 +153,33 @@ pub(super) fn fixed_page_viewport_resolution(source: &str) -> Result<Option<Stri
                         })
                         .flatten()
                 }) else {
-                    return Ok(None);
+                    resolution_available = false;
+                    buffer.clear();
+                    continue;
                 };
                 let Some(candidate) = numeric_viewport_resolution(&content) else {
-                    return Ok(None);
+                    resolution_available = false;
+                    buffer.clear();
+                    continue;
                 };
                 if resolution
                     .as_deref()
                     .is_some_and(|existing| existing != candidate)
                 {
-                    return Ok(None);
+                    resolution_available = false;
+                } else if resolution.is_none() {
+                    resolution = Some(candidate);
                 }
-                resolution = Some(candidate);
             }
             Event::Eof => break,
             _ => {}
         }
         buffer.clear();
     }
-    Ok(saw_viewport.then_some(resolution).flatten())
+    let resolution = (saw_viewport && resolution_available)
+        .then_some(resolution)
+        .flatten();
+    Ok((quality, resolution))
 }
 
 fn numeric_viewport_resolution(content: &str) -> Option<String> {
@@ -549,15 +539,15 @@ pub(super) fn document_styles_with_occupied_hrefs(
                     "inline style element has no closing tag".to_owned(),
                 ));
             };
-            let inline_source = &source[tag_end + 1..close_start];
-            validate_css_local_resource_paths(inline_source, document_path)?;
+            let inline_source = strip_cdata_wrappers(&source[tag_end + 1..close_start]);
+            validate_css_local_resource_paths(&inline_source, document_path)?;
             let (resource_href, reference) =
                 inline_style_href_with_occupied_hrefs(document_href, inline_index, occupied_hrefs);
             occupied_hrefs.insert(normalize_path(&resource_href));
             result.push(DocumentStyle {
                 reference,
                 resource_href: Some(resource_href),
-                inline_source: Some(source[tag_end + 1..close_start].to_owned()),
+                inline_source: Some(inline_source),
             });
             inline_index += 1;
             cursor = close_end + 1;
@@ -580,6 +570,30 @@ pub(super) fn document_styles_with_occupied_hrefs(
         cursor = tag_end + 1;
     }
     Ok(result)
+}
+
+/// Remove XML CDATA delimiters while retaining every byte of their CSS body.
+/// This also joins ordinary text and multiple CDATA sections in source order.
+fn strip_cdata_wrappers(source: &str) -> String {
+    const OPEN: &str = "<![CDATA[";
+    const CLOSE: &str = "]]>";
+
+    let mut result = String::with_capacity(source.len());
+    let mut cursor = 0;
+    while let Some(relative_open) = source[cursor..].find(OPEN) {
+        let open = cursor + relative_open;
+        result.push_str(&source[cursor..open]);
+        let content_start = open + OPEN.len();
+        let Some(relative_close) = source[content_start..].find(CLOSE) else {
+            result.push_str(&source[open..]);
+            return result;
+        };
+        let close = content_start + relative_close;
+        result.push_str(&source[content_start..close]);
+        cursor = close + CLOSE.len();
+    }
+    result.push_str(&source[cursor..]);
+    result
 }
 
 pub(super) fn unique_resource_id(base_id: &str, occupied_ids: &HashSet<String>) -> String {

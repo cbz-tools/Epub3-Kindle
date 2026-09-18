@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-18
+
+### Changed
+
+- Kept warning retrieval available through `ConversionOutcome` while hiding the
+  warning collection type and representation, and clarified library guidance on
+  conversion failures and warning use.
+- Refactored internal EPUB/KF8 structure and improved conversion efficiency for
+  navigation-heavy and fixed-layout books without changing generated Kindle output.
+
 ## [0.3.0] - 2026-09-16
 
 ### Added

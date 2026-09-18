@@ -195,7 +195,7 @@ fn valid_foreign_resource_fallback_selects_local_content_document() {
             .iter()
             .any(|warning| warning.code == WarningCode::W002)
     );
-    let db = PalmDb::parse(&outcome.value).expect("independent PalmDB parse");
+    let db = PalmDb::parse(outcome.value()).expect("independent PalmDB parse");
     let header = db.mobi_header(0).expect("MOBI header");
     assert!(
         text(&reconstruct_text(&db, &header).expect("RawML")).contains("AUTH_VALID_FALLBACK"),
@@ -216,20 +216,20 @@ fn valid_foreign_binary_fallback_replaces_unsupported_resource() {
     );
     assert!(
         outcome
-            .value
+            .value()
             .windows(b"AUTH_BINARY_FALLBACK".len())
             .any(|window| window == b"AUTH_BINARY_FALLBACK")
     );
     assert!(
         outcome
-            .value
+            .value()
             .windows(b"AUTH_UNSUPPORTED_PRIMARY_IMAGE".len())
             .all(|window| window != b"AUTH_UNSUPPORTED_PRIMARY_IMAGE"),
         "the unsupported primary resource must not be serialized"
     );
     assert!(
         outcome
-            .value
+            .value()
             .windows(b"\x89PNG\r\n\x1a\n".len())
             .any(|window| window == b"\x89PNG\r\n\x1a\n"),
         "the usable fallback image must be serialized"
@@ -269,7 +269,7 @@ fn scripting_input_is_sanitized_with_a_warning_and_readable_text_preserved() {
     // REQ: CONT-009, SEC-001, SEC-002
     let outcome = convert_bytes_with_warnings(&epub::scripting(), &plain())
         .expect("scripting semantics must be safely degraded");
-    let db = PalmDb::parse(&outcome.value).expect("independent PalmDB parse");
+    let db = PalmDb::parse(outcome.value()).expect("independent PalmDB parse");
     let header = db.mobi_header(0).expect("MOBI header");
     let raw = text(&reconstruct_text(&db, &header).expect("RawML"));
     assert!(
@@ -288,7 +288,7 @@ fn kindle_unsupported_css_that_changes_visible_content_warns_and_preserves_text(
     // REQ: CSS-007, CSS-008, AMZ-CSS-002, SEM-006
     let outcome = convert_bytes_with_warnings(&epub::unsupported_css(), &plain())
         .expect("unsupported but processable CSS must degrade safely");
-    let db = PalmDb::parse(&outcome.value).expect("independent PalmDB parse");
+    let db = PalmDb::parse(outcome.value()).expect("independent PalmDB parse");
     let header = db.mobi_header(0).expect("MOBI header");
     let raw = text(&reconstruct_text(&db, &header).expect("RawML"));
     assert!(
@@ -313,7 +313,7 @@ fn unsupported_media_overlay_warns_while_container_path_escape_remains_an_error(
     // REQ: CONT-010, SEC-004, SEC-007
     let outcome = convert_bytes_with_warnings(&epub::media_overlay(), &plain())
         .expect("media overlay playback must be safely degraded");
-    let db = PalmDb::parse(&outcome.value).expect("independent PalmDB parse");
+    let db = PalmDb::parse(outcome.value()).expect("independent PalmDB parse");
     let header = db.mobi_header(0).expect("MOBI header");
     let raw = text(&reconstruct_text(&db, &header).expect("RawML"));
     assert!(
@@ -336,7 +336,7 @@ fn recoverable_viewport_degradation_converts_with_w004() {
     let outcome =
         convert_bytes_with_warnings(&epub::fixed_layout_with_degraded_viewport(), &plain())
             .expect("a recoverable viewport variant must convert");
-    assert!(!outcome.value.is_empty());
+    assert!(!outcome.value().is_empty());
     assert!(
         outcome
             .warnings()

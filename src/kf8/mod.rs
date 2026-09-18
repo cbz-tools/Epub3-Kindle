@@ -26,6 +26,9 @@ mod palmdoc;
 mod position;
 mod rawml;
 mod rawml_attributes;
+mod rawml_layout;
+mod rawml_links;
+mod rawml_structure;
 mod rawml_styles;
 mod resc;
 mod resource;
@@ -34,7 +37,7 @@ mod skel;
 mod tbs;
 mod text;
 
-use crate::{error::Result, kindle::KindleBook};
+use crate::{WarningCollector, error::Result, kindle::KindleBook};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TextCompression {
@@ -52,6 +55,14 @@ pub(crate) use serializer::{
 };
 pub(crate) use text::PalmDocCompressor;
 
-pub(crate) fn build(book: KindleBook, compression: TextCompression) -> Result<Kf8Book> {
-    Kf8Builder::build_with_compression(book, matches!(compression, TextCompression::PalmDoc))
+pub(crate) fn build(
+    book: KindleBook,
+    compression: TextCompression,
+    warnings: &mut WarningCollector,
+) -> Result<Kf8Book> {
+    Kf8Builder::build_with_compression(
+        book,
+        matches!(compression, TextCompression::PalmDoc),
+        warnings,
+    )
 }

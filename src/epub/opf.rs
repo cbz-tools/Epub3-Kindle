@@ -9,6 +9,8 @@ use std::path::Path;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
+use quick_xml::name::{Namespace, ResolveResult};
+use quick_xml::reader::NsReader;
 
 use super::navigation::split_link_suffix;
 use super::package::resolve_href;
@@ -20,6 +22,9 @@ use crate::book::{
 };
 use crate::error::{Error, Result};
 use crate::xhtml::path::normalize_path_lossy as normalize_path;
+
+const OPF_NAMESPACE: &[u8] = b"http://www.idpf.org/2007/opf";
+const DUBLIN_CORE_NAMESPACE: &[u8] = b"http://purl.org/dc/elements/1.1/";
 #[derive(Debug, Clone)]
 pub(super) struct ManifestItem {
     pub(super) id: String,
@@ -115,34 +120,48 @@ pub(super) fn parse_rootfile(xml: &[u8]) -> Result<String> {
 
 pub(super) fn parse_opf(xml: &[u8]) -> Result<ParsedOpf> {
     let mut result = ParsedOpf::default();
-    let mut reader = Reader::from_reader(Cursor::new(xml));
+    let mut reader = NsReader::from_reader(Cursor::new(xml));
     reader.config_mut().trim_text(true);
     let mut buffer = Vec::new();
     let mut metadata_depth = 0usize;
     let mut metadata_elements = Vec::new();
     loop {
-        match reader.read_event_into(&mut buffer)? {
+        let (namespace, event) = reader.read_resolved_event_into(&mut buffer)?;
+        let is_opf = is_opf_namespace(&namespace);
+        let metadata_namespace = metadata_namespace(&namespace);
+        match event {
             Event::Start(event) => {
                 let name = local_name(event.name().as_ref());
                 if name == "package" {
-                    validate_package_declaration(&event)?;
+                    validate_package_declaration(is_opf, &event)?;
                 }
-                if name == "metadata" {
+                if is_opf && name == "metadata" {
                     metadata_depth += 1;
-                } else if metadata_depth > 0 && is_metadata_element(&name) {
-                    metadata_elements.push(MetadataElement::from_start(&event, name));
-                } else {
+                } else if metadata_depth > 0 && is_metadata_element(metadata_namespace, &name) {
+                    let metadata_namespace = metadata_namespace
+                        .expect("recognized metadata element has a known namespace");
+                    metadata_elements.push(MetadataElement::from_start(
+                        &event,
+                        name,
+                        metadata_namespace,
+                    ));
+                } else if is_opf {
                     parse_opf_start(&event, &mut result);
                 }
             }
             Event::Empty(event) => {
                 let name = local_name(event.name().as_ref());
                 if name == "package" {
-                    validate_package_declaration(&event)?;
+                    validate_package_declaration(is_opf, &event)?;
                 }
-                if metadata_depth > 0 && is_metadata_element(&name) {
-                    apply_metadata_element(&mut result, MetadataElement::from_empty(&event, name));
-                } else {
+                if metadata_depth > 0 && is_metadata_element(metadata_namespace, &name) {
+                    let metadata_namespace = metadata_namespace
+                        .expect("recognized metadata element has a known namespace");
+                    apply_metadata_element(
+                        &mut result,
+                        MetadataElement::from_empty(&event, name, metadata_namespace),
+                    );
+                } else if is_opf {
                     parse_opf_start(&event, &mut result);
                 }
             }
@@ -163,12 +182,11 @@ pub(super) fn parse_opf(xml: &[u8]) -> Result<ParsedOpf> {
             }
             Event::End(event) => {
                 let name = local_name(event.name().as_ref());
-                if metadata_depth > 0 && name == "metadata" {
+                if metadata_depth > 0 && is_opf && name == "metadata" {
                     metadata_depth = metadata_depth.saturating_sub(1);
-                } else if metadata_elements
-                    .last()
-                    .is_some_and(|element| element.name == name)
-                {
+                } else if metadata_elements.last().is_some_and(|element| {
+                    element.name == name && metadata_namespace == Some(element.namespace)
+                }) {
                     if let Some(element) = metadata_elements.pop() {
                         apply_metadata_element(&mut result, element);
                     }
@@ -220,7 +238,12 @@ pub(super) fn parse_opf(xml: &[u8]) -> Result<ParsedOpf> {
     Ok(result)
 }
 
-fn validate_package_declaration(event: &BytesStart<'_>) -> Result<()> {
+fn validate_package_declaration(is_opf: bool, event: &BytesStart<'_>) -> Result<()> {
+    if !is_opf {
+        return Err(Error::InvalidEpub(
+            "package namespace must be http://www.idpf.org/2007/opf".to_owned(),
+        ));
+    }
     let version = attr(event, "version").ok_or_else(|| {
         Error::InvalidEpub("package version is required and must be EPUB 3.x".to_owned())
     })?;
@@ -229,20 +252,35 @@ fn validate_package_declaration(event: &BytesStart<'_>) -> Result<()> {
             "unsupported package version {version:?}; expected EPUB 3.x"
         )));
     }
-    let namespace = attr(event, "xmlns").ok_or_else(|| {
-        Error::InvalidEpub("package namespace is required for EPUB 3.x".to_owned())
-    })?;
-    if namespace != "http://www.idpf.org/2007/opf" {
-        return Err(Error::InvalidEpub(format!(
-            "unsupported package namespace {namespace:?}"
-        )));
-    }
     Ok(())
+}
+
+fn is_opf_namespace(namespace: &ResolveResult<'_>) -> bool {
+    matches!(namespace, ResolveResult::Bound(Namespace(uri)) if *uri == OPF_NAMESPACE)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetadataNamespace {
+    Opf,
+    DublinCore,
+}
+
+fn metadata_namespace(namespace: &ResolveResult<'_>) -> Option<MetadataNamespace> {
+    match namespace {
+        ResolveResult::Bound(Namespace(uri)) if *uri == OPF_NAMESPACE => {
+            Some(MetadataNamespace::Opf)
+        }
+        ResolveResult::Bound(Namespace(uri)) if *uri == DUBLIN_CORE_NAMESPACE => {
+            Some(MetadataNamespace::DublinCore)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
 struct MetadataElement {
     name: String,
+    namespace: MetadataNamespace,
     id: Option<String>,
     property: Option<String>,
     refines: Option<String>,
@@ -253,9 +291,10 @@ struct MetadataElement {
 }
 
 impl MetadataElement {
-    fn from_start(event: &BytesStart<'_>, name: String) -> Self {
+    fn from_start(event: &BytesStart<'_>, name: String, namespace: MetadataNamespace) -> Self {
         Self {
             name: name.clone(),
+            namespace,
             id: attr(event, "id"),
             property: attr(event, "property"),
             refines: attr(event, "refines").map(|value| normalize_refines(&value)),
@@ -268,25 +307,39 @@ impl MetadataElement {
         }
     }
 
-    fn from_empty(event: &BytesStart<'_>, name: String) -> Self {
-        Self::from_start(event, name)
+    fn from_empty(event: &BytesStart<'_>, name: String, namespace: MetadataNamespace) -> Self {
+        Self::from_start(event, name, namespace)
     }
 }
 
-fn is_metadata_element(name: &str) -> bool {
-    matches!(
-        name,
-        "title"
-            | "creator"
-            | "language"
-            | "identifier"
-            | "date"
-            | "publisher"
-            | "description"
-            | "contributor"
-            | "meta"
-            | "collection"
-    )
+fn is_metadata_element(namespace: Option<MetadataNamespace>, name: &str) -> bool {
+    match namespace {
+        Some(MetadataNamespace::Opf) => matches!(
+            name,
+            "title"
+                | "creator"
+                | "language"
+                | "identifier"
+                | "date"
+                | "publisher"
+                | "description"
+                | "contributor"
+                | "meta"
+                | "collection"
+        ),
+        Some(MetadataNamespace::DublinCore) => matches!(
+            name,
+            "title"
+                | "creator"
+                | "language"
+                | "identifier"
+                | "date"
+                | "publisher"
+                | "description"
+                | "contributor"
+        ),
+        None => false,
+    }
 }
 
 fn normalize_refines(value: &str) -> String {

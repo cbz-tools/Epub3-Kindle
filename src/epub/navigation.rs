@@ -3,7 +3,7 @@
 //! This module absorbs source-format differences and canonicalizes navigation
 //! targets; KF8 INDX/CTOC serialization remains in `kf8::ncx`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::Path;
 
@@ -16,7 +16,7 @@ use crate::book::{
     Navigation, NavigationGroup, NavigationItem, NavigationLandmark, plain_display_text,
 };
 use crate::error::{Error, Result};
-use crate::xhtml::path::{is_external_reference, resolve_path};
+use crate::xhtml::path::{is_external_reference, normalize_path, resolve_path};
 pub(super) fn parse_ncx(xml: &[u8]) -> Result<Navigation> {
     let mut reader = Reader::from_reader(Cursor::new(xml));
     reader.config_mut().trim_text(true);
@@ -300,73 +300,162 @@ pub(super) fn canonicalize_navigation(
     navigation_path: &str,
     opf_base: &Path,
     manifest: &[ManifestItem],
+    direct_svg_spine_ids: &HashSet<String>,
 ) -> Result<()> {
     let navigation_base = Path::new(navigation_path)
         .parent()
         .unwrap_or_else(|| Path::new(""));
     let mut manifest_by_resolved_path = HashMap::with_capacity(manifest.len());
+    let mut manifest_by_href = HashMap::with_capacity(manifest.len());
     for candidate in manifest.iter().filter(|candidate| {
         candidate
             .media_type
             .eq_ignore_ascii_case("application/xhtml+xml")
             || candidate.media_type.eq_ignore_ascii_case("text/html")
+            || direct_svg_spine_ids.contains(&candidate.id)
     }) {
         let resolved_path = resolve_href(opf_base, &candidate.href);
-        // Preserve the old manifest.iter().find() behavior for duplicate and
-        // empty resolved paths: the first declaration wins. Empty is a valid
-        // lookup key here because resolve_href returns it for external hrefs.
+        // Preserve the first declaration for duplicate and empty resolved
+        // paths. Empty is a valid key because resolve_href returns it for
+        // external hrefs.
         manifest_by_resolved_path
             .entry(resolved_path)
             .or_insert_with(|| candidate.href.clone());
+        if !is_external_reference(&candidate.href) {
+            if let Some(manifest_spelling) = normalize_path(&candidate.href) {
+                // Keep the Book-coordinate spelling separately so a repeated
+                // canonicalization pass does not resolve it against nav again.
+                manifest_by_href
+                    .entry(manifest_spelling)
+                    .or_insert_with(|| candidate.href.clone());
+            }
+        }
     }
     for item in &mut navigation.items {
-        canonicalize_navigation_item(item, navigation_base, &manifest_by_resolved_path)?;
+        canonicalize_navigation_item(
+            item,
+            navigation_base,
+            &manifest_by_resolved_path,
+            &manifest_by_href,
+        )?;
     }
+    drop_cfi_page_list_items(&mut navigation.page_list);
     for item in &mut navigation.page_list {
-        canonicalize_navigation_item(item, navigation_base, &manifest_by_resolved_path)?;
+        canonicalize_navigation_item(
+            item,
+            navigation_base,
+            &manifest_by_resolved_path,
+            &manifest_by_href,
+        )?;
     }
     for landmark in &mut navigation.landmarks {
         let (target_path, suffix) = split_link_suffix(&landmark.href);
         if !target_path.is_empty() {
             validate_local_navigation_target(target_path, navigation_base)?;
-            let resolved_target = resolve_href(navigation_base, target_path);
-            if let Some(manifest_href) = manifest_by_resolved_path.get(&resolved_target) {
-                landmark.href = format!("{}{}", manifest_href, suffix);
-            } else {
-                landmark.href = format!("{}{}", resolved_target, suffix);
-            }
+            landmark.href = format!(
+                "{}{}",
+                canonical_navigation_target(
+                    target_path,
+                    navigation_base,
+                    &manifest_by_resolved_path,
+                    &manifest_by_href,
+                ),
+                suffix
+            );
         }
     }
     for group in &mut navigation.custom {
         for item in &mut group.items {
-            canonicalize_navigation_item(item, navigation_base, &manifest_by_resolved_path)?;
+            canonicalize_navigation_item(
+                item,
+                navigation_base,
+                &manifest_by_resolved_path,
+                &manifest_by_href,
+            )?;
         }
     }
     Ok(())
+}
+
+fn drop_cfi_page_list_items(items: &mut Vec<NavigationItem>) {
+    let mut retained = Vec::with_capacity(items.len());
+    for mut item in std::mem::take(items) {
+        drop_cfi_page_list_items(&mut item.children);
+        if is_epub_cfi_page_list_target(&item.href) {
+            // Keep any ordinary nested page targets while dropping only the
+            // unsupported CFI destination itself.
+            retained.append(&mut item.children);
+        } else {
+            retained.push(item);
+        }
+    }
+    *items = retained;
+}
+
+fn is_epub_cfi_page_list_target(href: &str) -> bool {
+    let Some((_, fragment)) = href.split_once('#') else {
+        return false;
+    };
+    let fragment = fragment.split('?').next().unwrap_or(fragment);
+    fragment
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("epubcfi("))
+        && fragment.ends_with(')')
 }
 
 fn canonicalize_navigation_item(
     item: &mut NavigationItem,
     navigation_base: &Path,
     manifest_by_resolved_path: &HashMap<String, String>,
+    manifest_by_href: &HashMap<String, String>,
 ) -> Result<()> {
     let (target_path, suffix) = split_link_suffix(&item.href);
     if !target_path.is_empty() {
         validate_local_navigation_target(target_path, navigation_base)?;
-        let resolved_target = resolve_href(navigation_base, target_path);
-        if let Some(manifest_href) = manifest_by_resolved_path.get(&resolved_target) {
-            // Keep the manifest spelling, including case, as the Book IR's
-            // canonical document name. Only the navigation source-relative
-            // prefix is normalized here.
-            item.href = format!("{}{}", manifest_href, suffix);
-        } else {
-            item.href = format!("{}{}", resolved_target, suffix);
-        }
+        item.href = format!(
+            "{}{}",
+            canonical_navigation_target(
+                target_path,
+                navigation_base,
+                manifest_by_resolved_path,
+                manifest_by_href,
+            ),
+            suffix
+        );
     }
     for child in &mut item.children {
-        canonicalize_navigation_item(child, navigation_base, manifest_by_resolved_path)?;
+        canonicalize_navigation_item(
+            child,
+            navigation_base,
+            manifest_by_resolved_path,
+            manifest_by_href,
+        )?;
     }
     Ok(())
+}
+
+fn canonical_navigation_target(
+    target_path: &str,
+    navigation_base: &Path,
+    manifest_by_resolved_path: &HashMap<String, String>,
+    manifest_by_href: &HashMap<String, String>,
+) -> String {
+    // Navigation hrefs may already be in package-document coordinates. When
+    // that path names a manifest document, or is already in manifest spelling,
+    // preserve it instead of resolving it against the navigation document.
+    if let Some(target) = normalize_path(target_path) {
+        if let Some(manifest_href) = manifest_by_resolved_path
+            .get(&target)
+            .or_else(|| manifest_by_href.get(&target))
+        {
+            return manifest_href.clone();
+        }
+    }
+    let resolved_target = resolve_href(navigation_base, target_path);
+    manifest_by_resolved_path
+        .get(&resolved_target)
+        .cloned()
+        .unwrap_or(resolved_target)
 }
 
 fn validate_local_navigation_target(target: &str, navigation_base: &Path) -> Result<()> {

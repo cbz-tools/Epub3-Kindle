@@ -102,8 +102,10 @@ impl<'a> PalmDb<'a> {
                 return Err(format!("record {i} offset outside file: {off}"));
             }
             if let Some(prev) = offsets.last().copied() {
-                if off <= prev {
-                    return Err(format!("record offsets not strictly increasing at {i}"));
+                // Empty PalmDB records have equal start/end offsets and may
+                // therefore share an offset with the following record.
+                if off < prev {
+                    return Err(format!("record offsets are out of order at {i}"));
                 }
             }
             offsets.push(off);

@@ -8,6 +8,7 @@ use super::rawml::{
     rewrite_projected_attributes,
 };
 use super::rawml_styles::rewrite_stylesheet_links_with_references;
+use crate::WarningCollector;
 use crate::error::Result;
 use crate::kindle::{KindleLayoutSemantic, KindleResource, KindleSection};
 
@@ -26,6 +27,7 @@ pub(super) fn prepare_content<'a>(
     resources: &'a [KindleResource],
     library_thumbnail: Option<Vec<u8>>,
     cover_resource_id: Option<&str>,
+    warnings: &mut WarningCollector,
 ) -> Result<PreparedContent<'a>> {
     let (resource_index, section_lookup, css_resources) = classify_content(sections, resources);
     let sections =
@@ -37,6 +39,7 @@ pub(super) fn prepare_content<'a>(
         &section_lookup,
         &anchor_indices,
         &css_resources,
+        warnings,
     )?;
     Ok(PreparedContent {
         sections,
@@ -84,7 +87,10 @@ fn project_style_and_resources(
             id: section.id,
             href: section.href,
             source_xhtml: source,
+            is_svg_document: section.is_svg_document,
             referenced_styles: section.referenced_styles,
+            dropped_stylesheets: section.dropped_stylesheets,
+            page_viewport: section.page_viewport,
             linear: section.linear,
             layout: section.layout,
             rendition: section.rendition,
@@ -130,6 +136,8 @@ fn normalize_structural_content(
             &section.source_xhtml,
             &flow_reference,
             css_reference.as_deref(),
+            section.is_svg_document,
+            section.page_viewport.as_deref(),
         ) else {
             return Err(crate::error::Error::Output(format!(
                 "pre-paginated section {} has no page presentation",
@@ -159,6 +167,7 @@ fn prepare_link_materialization(
     section_lookup: &SectionIndex,
     anchor_indices: &[AnchorIndex],
     css_resources: &super::css_flow::CssResourceIndex<'_>,
+    warnings: &mut WarningCollector,
 ) -> Result<Vec<Vec<PendingInternalLink>>> {
     let mut pending_links = Vec::with_capacity(sections.len());
     for (section_number, section) in sections.iter_mut().enumerate() {
@@ -170,6 +179,8 @@ fn prepare_link_materialization(
             section_number,
             anchor_indices,
             css_resources,
+            &section.dropped_stylesheets,
+            warnings,
         )?;
         section.source_xhtml = source;
         pending_links.push(links);

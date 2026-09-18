@@ -9,7 +9,18 @@ const SUPPORTED_OUTPUT_ERROR: &str =
     "unsupported output extension; supported output extensions are .azw3 and .mobi";
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Convert one EPUB path to an AZW3 or Dual MOBI path, replacing the destination atomically.
+/// Converts an EPUB file to AZW3 or Dual MOBI, replacing the destination atomically.
+///
+/// The output extension selects the format: `.azw3` produces KF8-only AZW3,
+/// while `.mobi` produces a Dual MOBI with a minimal KF7 compatibility section
+/// and the canonical KF8 reading rendition. A same-directory temporary file is
+/// replaced into the destination only after serialization succeeds.
+///
+/// # Errors
+///
+/// Returns an error for an unsupported input or output extension, input or
+/// output I/O failure, unsupported or invalid EPUB content, or KF8/MOBI
+/// construction and serialization failure.
 pub fn convert_file(
     input: impl AsRef<Path>,
     output: impl AsRef<Path>,
@@ -18,7 +29,19 @@ pub fn convert_file(
     convert_file_with_warnings(input, output, options).map(|_| ())
 }
 
-/// Convert one EPUB path and return any warnings collected during conversion.
+/// Converts an EPUB file and returns any warnings collected during conversion.
+///
+/// The output extension selects the format: `.azw3` produces KF8-only AZW3,
+/// while `.mobi` produces a Dual MOBI with a minimal KF7 compatibility section
+/// and the canonical KF8 reading rendition. Inspect warnings with
+/// [`ConversionOutcome::warnings`]; the outcome value is `()` because output is
+/// written to the destination path.
+///
+/// # Errors
+///
+/// Returns an error for an unsupported input or output extension, input or
+/// output I/O failure, unsupported or invalid EPUB content, or KF8/MOBI
+/// construction and serialization failure.
 pub fn convert_file_with_warnings(
     input: impl AsRef<Path>,
     output: impl AsRef<Path>,
@@ -50,8 +73,8 @@ pub fn convert_file_with_warnings(
         Compression::None => kf8::TextCompression::None,
         Compression::PalmDoc => kf8::TextCompression::PalmDoc,
     };
-    let kf8_book =
-        kf8::build(kindle_book, compression).map_err(|error| Error::Kf8Build(error.to_string()))?;
+    let kf8_book = kf8::build(kindle_book, compression, &mut warnings)
+        .map_err(|error| Error::Kf8Build(error.to_string()))?;
 
     let (temporary, file) = create_temporary_file(output)?;
     let write_result = (|| {

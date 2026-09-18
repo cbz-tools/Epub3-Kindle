@@ -156,6 +156,9 @@ fn is_at_rule_prelude(source: &str, start: usize, boundary: usize) -> Result<boo
 
 pub(super) fn validate_local_resource_paths(source: &str, stylesheet_href: &str) -> Result<()> {
     for target in css_url_targets(source, 0, source.len())? {
+        if is_fragment_only_reference(&target) {
+            continue;
+        }
         if !is_external_reference(&target) && resolve_path(stylesheet_href, &target).is_none() {
             return Err(Error::InvalidEpub(format!(
                 "CSS resource path {target} escapes the EPUB root"
@@ -163,6 +166,10 @@ pub(super) fn validate_local_resource_paths(source: &str, stylesheet_href: &str)
         }
     }
     Ok(())
+}
+
+fn is_fragment_only_reference(target: &str) -> bool {
+    target.starts_with('#')
 }
 
 fn css_url_targets(source: &str, start: usize, end: usize) -> Result<Vec<String>> {

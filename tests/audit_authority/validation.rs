@@ -77,7 +77,7 @@ fn amazon_individual_html_size_boundary_warns_and_converts_at_and_above_limit() 
     let at_outcome = convert_bytes_with_warnings(&at, &ConvertOptions::default())
         .expect("an individual XHTML document at the guidance limit must convert");
     assert!(
-        !at_outcome.value.is_empty()
+        !at_outcome.value().is_empty()
             && at_outcome
                 .warnings()
                 .iter()
@@ -87,7 +87,7 @@ fn amazon_individual_html_size_boundary_warns_and_converts_at_and_above_limit() 
     let (_, above) = epub::html_size_boundary(30_000_000, 30_000_001);
     let above_outcome = convert_bytes_with_warnings(&above, &ConvertOptions::default())
         .expect("an individual XHTML document above the guidance limit must convert");
-    assert!(!above_outcome.value.is_empty());
+    assert!(!above_outcome.value().is_empty());
     assert!(
         above_outcome
             .warnings()
@@ -115,7 +115,7 @@ fn amazon_html_document_count_boundary_warns_and_converts_at_and_above_limit() {
                 .unwrap_or_else(|error| {
                     panic!("{count} HTML/XHTML documents must convert: {error}")
                 });
-        assert!(!outcome.value.is_empty());
+        assert!(!outcome.value().is_empty());
         assert!(
             outcome
                 .warnings()

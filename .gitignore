@@ -1,3 +1,13 @@
 /target/
 /*.zip
 /artifacts/
+.env
+.env.local
+.env.*.local
+*.log
+*.tmp
+*.temp
+.vscode/
+.idea/
+.vs/
+/release-assets/

@@ -23,6 +23,7 @@ use super::resource::{
     is_text_resource, serialize_font_resource,
 };
 use super::text::PalmDocCompressor;
+use crate::WarningCollector;
 use crate::error::Result;
 use crate::kindle::{
     KindleBook, KindlePageProgression as PageProgression, KindleResource, KindleSection,
@@ -81,6 +82,7 @@ impl Kf8Builder {
     pub(crate) fn build_with_compression(
         mut book: KindleBook,
         palm_doc_compression: bool,
+        warnings: &mut WarningCollector,
     ) -> Result<Kf8Book> {
         let mut resources = std::mem::take(&mut book.resources);
         let library_thumbnail = prepare_cover(&book, &mut resources)?;
@@ -90,6 +92,7 @@ impl Kf8Builder {
             &resources,
             library_thumbnail,
             cover_resource_id.as_deref(),
+            warnings,
         )?;
         let geometry = build_geometry(prepared)?;
         book.resources = resources;

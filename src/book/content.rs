@@ -18,6 +18,9 @@ pub struct ContentDocument {
     /// Effective source rendition layout resolved from the OPF spine itemref
     /// and publication-level rendition metadata.
     pub layout: LayoutSemantic,
+    /// Numeric dimensions from this fixed-layout XHTML document's explicit
+    /// viewport declaration. Intrinsic image and SVG dimensions are not used.
+    pub page_viewport: Option<String>,
     pub rendition: crate::book::RenditionSemantics,
     /// Original EPUB spine itemref properties, including page-spread aliases.
     pub source_properties: Vec<String>,
@@ -30,6 +33,9 @@ pub struct ContentDocument {
     /// annotation buffers that KF8 normalization does not consume.
     pub is_cover: bool,
     pub referenced_styles: Vec<String>,
+    /// Canonical hrefs of linked stylesheets intentionally omitted because
+    /// their bytes could not be decoded by the supported text decoder.
+    pub dropped_stylesheets: Vec<String>,
 }
 
 impl ContentDocument {

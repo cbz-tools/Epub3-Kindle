@@ -148,6 +148,162 @@ pub fn minimal_reflowable() -> Vec<u8> {
     ])
 }
 
+pub fn epc001_canonical_document_targets() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="xhtml/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="start" href="xhtml/start.xhtml" media-type="application/xhtml+xml"/>
+<item id="target" href="xhtml/target.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="start"/><itemref idref="target"/>"#,
+        "",
+    );
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/xhtml/nav.xhtml",
+            nav(&[
+                ("EPUB/xhtml/target.xhtml#piv", "Target pivot"),
+                ("EPUB/xhtml/target.xhtml#later", "Later target"),
+            ]),
+        ),
+        Entry::text(
+            "EPUB/xhtml/start.xhtml",
+            xhtml(
+                "Start",
+                "en",
+                "",
+                "<h1>Start</h1><p><a href=\"xhtml/target.xhtml#piv\">Target pivot</a></p><p><a href=\"xhtml/target.xhtml#later\">Later target</a></p>",
+                "",
+            ),
+        ),
+        Entry::text(
+            "EPUB/xhtml/target.xhtml",
+            xhtml(
+                "Target",
+                "en",
+                "",
+                "<h1 id=\"piv\">Pivot</h1><p>Between the target anchors.</p><p id=\"later\">Later target.</p><p><a href=\"#piv\">Return to pivot</a></p>",
+                "",
+            ),
+        ),
+    ])
+}
+
+pub fn epc011_toc_body_fragment_targets() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="chapter-one" href="text/chapter-one.xhtml" media-type="application/xhtml+xml"/>
+<item id="chapter-two" href="text/chapter-two.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="chapter-one"/><itemref idref="chapter-two"/>"#,
+        "",
+    );
+    let nav = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>EPC-011 navigation</title></head><body>
+<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>
+<li><a href="text/chapter-one.xhtml#body-target">Body fragment</a></li>
+<li><a href="text/chapter-one.xhtml#section-target">Section fragment</a></li>
+<li><a href="text/chapter-two.xhtml#chapter-two-target">Second chapter</a></li>
+</ol></nav>
+</body></html>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/nav.xhtml", nav),
+        Entry::text(
+            "EPUB/text/chapter-one.xhtml",
+            xhtml(
+                "EPC-011 first chapter",
+                "en",
+                "id=\"body-target\"",
+                "<h1>First chapter</h1><p>AUTH_EPC011_BODY_FRAGMENT_CONTENT</p><p id=\"section-target\">AUTH_EPC011_SECTION_FRAGMENT_CONTENT</p><p><a href=\"#body-target\">Body target link</a></p><p><a href=\"#section-target\">Section target link</a></p><p><a href=\"chapter-two.xhtml#chapter-two-target\">Ordinary chapter link</a></p>",
+                "",
+            ),
+        ),
+        Entry::text(
+            "EPUB/text/chapter-two.xhtml",
+            xhtml(
+                "EPC-011 second chapter",
+                "en",
+                "",
+                "<h1 id=\"chapter-two-target\">Second chapter target</h1><p>AUTH_EPC011_SECOND_CHAPTER_CONTENT</p><p><a href=\"chapter-one.xhtml#section-target\">Return to first chapter</a></p>",
+                "",
+            ),
+        ),
+    ])
+}
+
+pub fn epc012_cfi_page_list_entries() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="chapter"/>"#,
+        "",
+    );
+    let nav = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>EPC-012 navigation</title></head><body>
+<nav epub:type="toc"><ol><li><a href="text/chapter.xhtml#chapter-target">Ordinary chapter</a></li></ol></nav>
+<nav epub:type="page-list"><ol>
+<li><a href="package.opf#epubcfi(/6/4[package]!/4/2[chapter]/1:0)">CFI page one</a></li>
+<li><a href="package.opf#epubcfi(/6/4[package]!/4/2[chapter]/1:25)">CFI page two</a></li>
+<li><a href="text/chapter.xhtml#chapter-target">Ordinary page target</a></li>
+</ol></nav>
+</body></html>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/nav.xhtml", nav),
+        Entry::text(
+            "EPUB/text/chapter.xhtml",
+            xhtml(
+                "EPC-012 chapter",
+                "en",
+                "",
+                "<h1 id=\"chapter-target\">EPC012_CHAPTER_TARGET</h1><p>AUTH_EPC012_READABLE_CONTENT</p><p><a href=\"#chapter-target\">Ordinary fragment link</a></p>",
+                "",
+            ),
+        ),
+    ])
+}
+
+pub fn epc002_prefixed_opf_package_namespace() -> Vec<u8> {
+    let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<opf:package xmlns:opf="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">
+<opf:metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:identifier id="pub-id">urn:uuid:epc002-prefixed-opf</dc:identifier>
+<dc:title>EPC-002 Prefixed OPF</dc:title>
+<dc:language>en</dc:language>
+<dc:creator>Audit Author</dc:creator>
+<opf:meta property="dcterms:modified">2026-09-17T00:00:00Z</opf:meta>
+</opf:metadata>
+<opf:manifest>
+<opf:item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<opf:item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/>
+</opf:manifest>
+<opf:spine page-progression-direction="ltr">
+<opf:itemref idref="chapter"/>
+</opf:spine>
+</opf:package>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/nav.xhtml",
+            nav(&[("text/chapter.xhtml", "Prefixed chapter")]),
+        ),
+        Entry::text(
+            "EPUB/text/chapter.xhtml",
+            xhtml(
+                "Prefixed chapter",
+                "en",
+                "",
+                "<h1 id=\"epc002\">Prefixed package body</h1><p>AUTH_EPC002_PREFIXED_OPF_BODY</p>",
+                "",
+            ),
+        ),
+    ])
+}
+
 pub fn metadata_and_spine() -> Vec<u8> {
     let opf = package(
         "<dc:publisher>Authority Publisher</dc:publisher><dc:subject>Audit Subject</dc:subject>",
@@ -685,6 +841,164 @@ pub fn fixed_layout_inferred_resolution() -> Vec<u8> {
     fixed_layout_with_original_resolution(false)
 }
 
+pub fn epc007_viewport_fixed_layout_with_blank_page() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="blank" href="pages/blank.xhtml" media-type="application/xhtml+xml"/>
+<item id="illustrated" href="pages/illustrated.xhtml" media-type="application/xhtml+xml"/>
+<item id="page-image" href="images/page.png" media-type="image/png"/>"#,
+        r#"<itemref idref="blank"/><itemref idref="illustrated"/>"#,
+        r#"<meta property="rendition:layout">pre-paginated</meta>"#,
+    );
+    let viewport = r#"<meta name="viewport" content="width=1200, height=1577"/>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/nav.xhtml",
+            nav(&[
+                ("pages/blank.xhtml", "Blank page"),
+                ("pages/illustrated.xhtml", "Illustrated page"),
+            ]),
+        ),
+        Entry::text(
+            "EPUB/pages/blank.xhtml",
+            xhtml(
+                "Blank page",
+                "en",
+                "",
+                "<div class=\"blank\"></div>",
+                viewport,
+            ),
+        ),
+        Entry::text(
+            "EPUB/pages/illustrated.xhtml",
+            xhtml(
+                "Illustrated page",
+                "en",
+                "",
+                "<img src=\"../images/page.png\"/><p>AUTH_EPC007_PAGE_TWO</p>",
+                viewport,
+            ),
+        ),
+        Entry::binary("EPUB/images/page.png", tiny_png()),
+    ])
+}
+
+pub fn epc008_intrinsic_bitmap_spine_without_viewport() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="page" href="images/page.png" media-type="image/png" fallback="fallback"/>
+<item id="fallback" href="fallback.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="page"/>"#,
+        r#"<meta property="rendition:layout">pre-paginated</meta>"#,
+    );
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/fallback.xhtml",
+            xhtml("Fallback", "en", "", "<p>AUTH_EPC008_FALLBACK_BODY</p>", ""),
+        ),
+        Entry::binary("EPUB/images/page.png", tiny_png()),
+    ])
+}
+
+pub fn epc008_intrinsic_svg_spine_without_viewport() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="page" href="images/page.svg" media-type="image/svg+xml"/>"#,
+        r#"<itemref idref="page"/>"#,
+        r#"<meta property="rendition:layout">pre-paginated</meta>"#,
+    );
+    let svg = r#"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1577" viewBox="0 0 1200 1577">
+  <rect x="0" y="0" width="1200" height="1577"/>
+</svg>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/images/page.svg", svg),
+    ])
+}
+
+pub fn epc008_direct_svg_navigation_targets(pre_paginated: bool) -> Vec<u8> {
+    let layout = if pre_paginated {
+        r#"<meta property="rendition:layout">pre-paginated</meta>"#
+    } else {
+        ""
+    };
+    let opf = package(
+        "",
+        r#"<item id="nav" href="Navigation/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="first" href="Content/first.svg" media-type="image/svg+xml"/>
+<item id="target" href="Content/page.svg" media-type="image/svg+xml"/>"#,
+        r#"<itemref idref="first"/><itemref idref="target"/>"#,
+        layout,
+    );
+    let nav = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>Direct SVG navigation</title></head><body>
+<nav epub:type="toc"><ol><li><a href="../Content/page.svg#svg-target">Target SVG page</a></li></ol></nav>
+<nav epub:type="page-list"><ol><li><a href="../Content/page.svg#svg-target">SVG page target</a></li></ol></nav>
+<nav epub:type="landmarks"><ol><li><a epub:type="bodymatter" href="../Content/first.svg#svg-first">First SVG page</a></li></ol></nav>
+</body></html>"#;
+    let first_svg = r#"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="svg-first" width="1200" height="1577" viewBox="0 0 1200 1577"><text x="10" y="30">AUTH_DIRECT_SVG_FIRST_PAGE</text></svg>"#;
+    let target_svg = r#"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" id="svg-target" width="1200" height="1577" viewBox="0 0 1200 1577"><text x="10" y="30">AUTH_DIRECT_SVG_POSITION_TARGET</text></svg>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/Navigation/nav.xhtml", nav),
+        Entry::text("EPUB/Content/first.svg", first_svg),
+        Entry::text("EPUB/Content/page.svg", target_svg),
+    ])
+}
+
+pub fn epc008_svg_spine_with_css_urls(extra_declarations: &str) -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="page" href="page.svg" media-type="image/svg+xml"/>
+<item id="paint-resource" href="file.svg" media-type="image/svg+xml"/>
+<item id="valid-relative-resource" href="../valid/inside.png" media-type="image/png"/>"#,
+        r#"<itemref idref="page"/>"#,
+        r#"<meta property="rendition:layout">pre-paginated</meta>"#,
+    );
+    let svg = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1577" viewBox="0 0 1200 1577">
+  <defs><linearGradient id="paint"><stop offset="0" stop-color="red"/></linearGradient></defs>
+  <style>.page {{ fill: url(#paint); {extra_declarations} }}</style>
+  <rect class="page" width="1200" height="1577"/>
+</svg>"#
+    );
+    let paint_resource = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><defs><linearGradient id="paint"/></defs></svg>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/page.svg", svg),
+        Entry::text("EPUB/file.svg", paint_resource),
+        Entry::binary("valid/inside.png", tiny_png()),
+    ])
+}
+
+pub fn epc008_fixed_layout_xhtml_with_inline_svg() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="page" href="text/page.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="page"/>"#,
+        r#"<meta property="rendition:layout">pre-paginated</meta>"#,
+    );
+    let page = xhtml(
+        "EPC-008 explicit viewport with inline SVG",
+        "en",
+        "",
+        r#"<p>AUTH_EPC008_INLINE_SVG_BODY</p><svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1577" viewBox="0 0 1200 1577"><rect x="0" y="0" width="1200" height="1577"/></svg>"#,
+        r#"<meta name="viewport" content="width=1200,height=1577"/>"#,
+    );
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/text/page.xhtml", page),
+    ])
+}
+
 fn fixed_layout_with_original_resolution(explicit_original_resolution: bool) -> Vec<u8> {
     let original_resolution = if explicit_original_resolution {
         r#"<meta name="original-resolution" content="1200x800"/>"#
@@ -928,6 +1242,400 @@ pub fn embedded_font(obfuscated: bool) -> Vec<u8> {
     ];
     entries.extend(encryption);
     write_epub(entries)
+}
+
+pub fn epc003_woff_idpf_obfuscated(media_type: &str) -> (Vec<u8>, Vec<u8>) {
+    let identifier = "urn:uuid:authority-audit-fixed-id";
+    let woff = woff_from_test_ttf();
+    let obfuscated_woff = idpf_obfuscate(&woff, identifier);
+    let encryption = r#"<?xml version="1.0" encoding="UTF-8"?>
+<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+<enc:EncryptedData><enc:EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/><enc:CipherData><enc:CipherReference URI="EPUB/fonts/audit.obf.woff"/></enc:CipherData></enc:EncryptedData>
+</encryption>"#;
+    let opf = package(
+        "",
+        &format!(
+            "<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/><item id=\"css\" href=\"styles/font.css\" media-type=\"text/css\"/><item id=\"c1\" href=\"text/ch1.xhtml\" media-type=\"application/xhtml+xml\"/><item id=\"font\" href=\"fonts/audit.obf.woff\" media-type=\"{media_type}\"/>"
+        ),
+        r#"<itemref idref="c1"/>"#,
+        "",
+    );
+    let epub = write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/nav.xhtml", nav(&[("text/ch1.xhtml", "Font")])),
+        Entry::text(
+            "EPUB/styles/font.css",
+            "@font-face{font-family:'AuthorityAudit';src:url('../fonts/audit.obf.woff') format('woff');}.fonted{font-family:'AuthorityAudit';}",
+        ),
+        Entry::text(
+            "EPUB/text/ch1.xhtml",
+            xhtml(
+                "EPC-003 WOFF",
+                "en",
+                "",
+                "<p class=\"fonted\">AUTH_EPC003_WOFF_FONT</p>",
+                "<link rel=\"stylesheet\" href=\"../styles/font.css\"/>",
+            ),
+        ),
+        Entry::binary("EPUB/fonts/audit.obf.woff", obfuscated_woff),
+        Entry::text("META-INF/encryption.xml", encryption),
+    ]);
+    (epub, woff)
+}
+
+pub fn epc004_pronunciation_lexicon() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
+<item id="pls-en" href="lexicon/en.pls" media-type="application/pls+xml"/>
+<item id="pls-de" href="lexicon/de.pls" media-type="application/pls+xml"/>"#,
+        r#"<itemref idref="c1"/>"#,
+        "",
+    );
+    let chapter = xhtml(
+        "EPC-004 pronunciation",
+        "en",
+        "",
+        "<p>AUTH_EPC004_PRONUNCIATION_BODY</p><p><span ssml:ph=\"AUTH_PHONEME\" ssml:alphabet=\"ipa\">world</span> <a href=\"#target\">Jump to target</a></p><h2 id=\"target\">AUTH_EPC004_TARGET</h2>",
+        "<link rel=\"pronunciation\" type=\"application/pls+xml\" href=\"../lexicon/en.pls\"/><link rel=\"alternate pronunciation\" type=\"application/pls+xml\" href=\"../lexicon/de.pls\"/>",
+    )
+    .replace(
+        "<html ",
+        "<html xmlns:ssml=\"http://www.w3.org/2001/10/synthesis\" ",
+    );
+    let pls = r#"<?xml version="1.0" encoding="UTF-8"?>
+<lexicon xmlns="http://www.w3.org/2005/01/pronunciation-lexicon" version="1.0" alphabet="ipa" xml:lang="en-US">
+  <lexeme><grapheme>world</grapheme><phoneme>AUTH_EPC004_PLS_PAYLOAD</phoneme></lexeme>
+</lexicon>"#;
+    let pls_de = r#"<?xml version="1.0" encoding="UTF-8"?>
+<lexicon xmlns="http://www.w3.org/2005/01/pronunciation-lexicon" version="1.0" alphabet="ipa" xml:lang="de-DE">
+  <lexeme><grapheme>world</grapheme><phoneme>AUTH_EPC004_PLS_PAYLOAD_DE</phoneme></lexeme>
+</lexicon>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/nav.xhtml",
+            nav(&[("text/ch1.xhtml", "Pronunciation")]),
+        ),
+        Entry::text("EPUB/text/ch1.xhtml", chapter),
+        Entry::text("EPUB/lexicon/en.pls", pls),
+        Entry::text("EPUB/lexicon/de.pls", pls_de),
+    ])
+}
+
+pub fn epc005_xpgt_page_template() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
+<item id="css" href="styles/ordinary.css" media-type="text/css"/>
+<item id="image" href="images/ordinary.png" media-type="image/png"/>
+<item id="xpgt-one" href="styles/page-template.xpgt" media-type="application/adobe-page-template+xml"/>
+<item id="xpgt-two" href="styles/alternate-template.xpgt" media-type="application/adobe-page-template+xml"/>"#,
+        r#"<itemref idref="c1"/>"#,
+        "",
+    );
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/nav.xhtml", nav(&[("text/ch1.xhtml", "XPGT")])),
+        Entry::text("EPUB/styles/ordinary.css", ".ordinary { color: red; }"),
+        Entry::text(
+            "EPUB/text/ch1.xhtml",
+            xhtml(
+                "EPC-005 XPGT",
+                "en",
+                "",
+                "<p class=\"ordinary\">AUTH_EPC005_XPGT_BODY</p><img src=\"../images/ordinary.png\" alt=\"ordinary resource\"/>",
+                "<link rel=\"stylesheet\" href=\"../styles/page-template.xpgt\" type=\"application/adobe-page-template+xml\"/><link rel=\"stylesheet\" href=\"../styles/alternate-template.xpgt\" type=\"application/adobe-page-template+xml\"/><link rel=\"stylesheet\" href=\"../styles/ordinary.css\" type=\"text/css\"/>",
+            ),
+        ),
+        Entry::binary("EPUB/images/ordinary.png", tiny_png()),
+        Entry::text(
+            "EPUB/styles/page-template.xpgt",
+            "AUTH_EPC005_XPGT_PAYLOAD_ONE .xpgt-one { color: blue; }",
+        ),
+        Entry::text(
+            "EPUB/styles/alternate-template.xpgt",
+            "AUTH_EPC005_XPGT_PAYLOAD_TWO .xpgt-two { color: green; }",
+        ),
+    ])
+}
+
+pub fn epc006_mathml_descendant_content() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="c1"/>"#,
+        "",
+    );
+    let chapter = xhtml(
+        "EPC-006 MathML",
+        "en",
+        "",
+        r#"<p>Before AUTH_EPC006_BEFORE <math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><mi>x</mi><mo>+</mo><mn>1</mn></mrow></math> AUTH_EPC006_BETWEEN <math xmlns="http://www.w3.org/1998/Math/MathML"><mfenced open="(" close=")"><mi>x</mi><mi>y</mi></mfenced></math> AUTH_EPC006_AFTER after.</p>"#,
+        "",
+    );
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/nav.xhtml", nav(&[("text/ch1.xhtml", "MathML")])),
+        Entry::text("EPUB/text/ch1.xhtml", chapter),
+    ])
+}
+
+pub fn epc009_inline_style_cdata() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="c1"/>"#,
+        "",
+    );
+    let chapter = xhtml(
+        "EPC-009 inline style CDATA",
+        "en",
+        "",
+        r#"<p class="example">AUTH_EPC009_CDATA_BODY</p><p class="ordinary">AUTH_EPC009_ORDINARY_BODY</p>"#,
+        "<style type=\"text/css\"><![CDATA[\nbody { margin: 0; }\n.example { font-weight: bold; }\n]]></style><style type=\"text/css\">.ordinary { color: red; }</style>",
+    );
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/nav.xhtml",
+            nav(&[("text/ch1.xhtml", "Inline style CDATA")]),
+        ),
+        Entry::text("EPUB/text/ch1.xhtml", chapter),
+    ])
+}
+
+pub fn epc010_invalid_utf8_stylesheets() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="valid-css" href="styles/valid.css" media-type="text/css"/>
+<item id="invalid-css-one" href="styles/invalid-one.css" media-type="text/css"/>
+<item id="invalid-css-two" href="styles/invalid-two.css" media-type="text/css"/>
+<item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="chapter"/>"#,
+        "",
+    );
+    let chapter = xhtml(
+        "EPC-010 invalid UTF-8 CSS",
+        "en",
+        "",
+        r#"<p class="good">AUTH_EPC010_READABLE_BODY</p>"#,
+        r#"<link rel="stylesheet" href="../styles/valid.css"/><link rel="stylesheet" href="../styles/invalid-one.css"/><link rel="stylesheet" href="../styles/invalid-two.css"/>"#,
+    );
+    let mut invalid_one =
+        b".invalid-one { color: red; } /* AUTH_EPC010_INVALID_ONE_PAYLOAD ".to_vec();
+    invalid_one.push(0xff);
+    invalid_one.extend_from_slice(b" */");
+    let mut invalid_two =
+        b".invalid-two { color: blue; } /* AUTH_EPC010_INVALID_TWO_PAYLOAD ".to_vec();
+    invalid_two.extend_from_slice(&[0xc3, 0x28]);
+    invalid_two.extend_from_slice(b" */");
+
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/nav.xhtml",
+            nav(&[("text/chapter.xhtml", "CSS degradation")]),
+        ),
+        Entry::text("EPUB/styles/valid.css", ".good { font-weight: bold; }"),
+        Entry::binary("EPUB/styles/invalid-one.css", invalid_one),
+        Entry::binary("EPUB/styles/invalid-two.css", invalid_two),
+        Entry::text("EPUB/text/chapter.xhtml", chapter),
+    ])
+}
+
+pub fn epc013_suppressed_cover_navigation() -> Vec<u8> {
+    let opf = package(
+        "<meta name=\"cover\" content=\"cover-image\"/>",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="cover-page" href="text/cover-page.xhtml" media-type="application/xhtml+xml"/>
+<item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/>
+<item id="cover-image" href="images/cover.png" media-type="image/png" properties="cover-image"/>"#,
+        r#"<itemref idref="nav"/><itemref idref="cover-page"/><itemref idref="chapter"/>"#,
+        "",
+    );
+    let nav = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>EPC-013 navigation</title></head><body>
+<nav epub:type="toc"><ol>
+<li><a href="text/cover-page.xhtml#cover-target">Cover contents entry</a></li>
+<li><a href="text/chapter.xhtml#ordinary">Ordinary chapter</a></li>
+</ol></nav>
+<nav epub:type="page-list"><ol>
+<li><a href="text/cover-page.xhtml#cover-target">Cover page</a></li>
+<li><a href="text/chapter.xhtml#ordinary">Ordinary page target</a></li>
+</ol></nav>
+<nav epub:type="landmarks"><ol>
+<li><a epub:type="cover" href="text/cover-page.xhtml#cover-target">Cover destination</a></li>
+<li><a epub:type="bodymatter" href="text/chapter.xhtml#ordinary">Start</a></li>
+</ol></nav>
+</body></html>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/nav.xhtml", nav),
+        Entry::text(
+            "EPUB/text/cover-page.xhtml",
+            xhtml(
+                "EPC-013 cover",
+                "en",
+                "epub:type=\"cover\"",
+                "<p id=\"cover-target\">AUTH_EPC013_SUPPRESSED_COVER_XHTML_BODY</p><img src=\"../images/cover.png\" alt=\"Cover image\"/>",
+                "",
+            ),
+        ),
+        Entry::text(
+            "EPUB/text/chapter.xhtml",
+            xhtml(
+                "EPC-013 chapter",
+                "en",
+                "",
+                "<p>AUTH_EPC013_CHAPTER_BODY</p><p><a href=\"#ordinary\">Ordinary fragment link</a></p><p id=\"ordinary\">AUTH_EPC013_ORDINARY_TARGET</p>",
+                "",
+            ),
+        ),
+        Entry::binary("EPUB/images/cover.png", tiny_png()),
+    ])
+}
+
+pub fn epc013_cover_navigation_without_native_cover_resource() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="cover-page" href="text/cover-page.xhtml" media-type="application/xhtml+xml"/>
+<item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="nav"/><itemref idref="cover-page"/><itemref idref="chapter"/>"#,
+        "",
+    );
+    let nav = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>EPC-013 navigation without native cover</title></head><body>
+<nav epub:type="toc"><ol>
+<li><a href="text/cover-page.xhtml#cover-target">Cover contents entry</a></li>
+<li><a href="text/chapter.xhtml#ordinary">Ordinary chapter</a></li>
+</ol></nav>
+<nav epub:type="page-list"><ol>
+<li><a href="text/cover-page.xhtml#cover-target">Cover page</a></li>
+<li><a href="text/chapter.xhtml#ordinary">Ordinary page target</a></li>
+</ol></nav>
+<nav epub:type="landmarks"><ol>
+<li><a epub:type="cover" href="text/cover-page.xhtml#cover-target">Cover destination</a></li>
+<li><a epub:type="bodymatter" href="text/chapter.xhtml#ordinary">Start</a></li>
+</ol></nav>
+</body></html>"#;
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text("EPUB/nav.xhtml", nav),
+        Entry::text(
+            "EPUB/text/cover-page.xhtml",
+            xhtml(
+                "EPC-013 cover without native resource",
+                "en",
+                "",
+                "<section epub:type=\"cover\"><h1 id=\"cover-target\">AUTH_EPC013_SOURCE_COVER</h1><p>Cover page retained as readable content.</p></section>",
+                "",
+            ),
+        ),
+        Entry::text(
+            "EPUB/text/chapter.xhtml",
+            xhtml(
+                "EPC-013 ordinary chapter",
+                "en",
+                "",
+                "<h1 id=\"ordinary\">AUTH_EPC013_ORDINARY_CHAPTER</h1>",
+                "",
+            ),
+        ),
+    ])
+}
+
+pub fn epc014_unresolvable_root_relative_web_links() -> Vec<u8> {
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="chapter-one" href="text/chapter1.xhtml" media-type="application/xhtml+xml"/>
+<item id="chapter-two" href="text/chapter2.xhtml" media-type="application/xhtml+xml"/>"#,
+        r#"<itemref idref="chapter-one"/><itemref idref="chapter-two"/>"#,
+        "",
+    );
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/nav.xhtml",
+            nav(&[("text/chapter1.xhtml", "Chapter One")]),
+        ),
+        Entry::text(
+            "EPUB/text/chapter1.xhtml",
+            xhtml(
+                "EPC-014 first chapter",
+                "en",
+                "",
+                concat!(
+                    "<h1>AUTH_EPC014_CHAPTER_ONE</h1>",
+                    "<p><a href=\"/w/index.php?title=Example&amp;action=edit\">ROOT-W-INDEX</a></p>",
+                    "<p><a href=\"/w/index.php?title=Example#edit\">ROOT-W-INDEX-FRAGMENT</a></p>",
+                    "<p><a href=\"/wiki/Example\">ROOT-WIKI</a></p>",
+                    "<p><a href=\"/wiki/Second?source=epub#target\">ROOT-WIKI-QUERY-FRAGMENT</a></p>",
+                    "<p><a href=\"https://example.com/absolute\">ABSOLUTE-HTTPS</a></p>",
+                    "<p><a href=\"mailto:authors@example.com\">ABSOLUTE-MAILTO</a></p>",
+                    "<h2 id=\"local-anchor\">AUTH_EPC014_LOCAL_TARGET</h2>",
+                    "<p><a href=\"#local-anchor\">LOCAL-FRAGMENT</a></p>",
+                    "<p><a href=\"chapter2.xhtml?view=1#target\">RELATIVE-INTERNAL</a></p>",
+                    "<p><a href=\"/text/chapter2.xhtml#target\">ROOT-RELATIVE-INTERNAL</a></p>"
+                ),
+                "",
+            ),
+        ),
+        Entry::text(
+            "EPUB/text/chapter2.xhtml",
+            xhtml(
+                "EPC-014 second chapter",
+                "en",
+                "",
+                "<h1 id=\"target\">AUTH_EPC014_CHAPTER_TWO_TARGET</h1>",
+                "",
+            ),
+        ),
+    ])
+}
+
+fn woff_from_test_ttf() -> Vec<u8> {
+    let sfnt = include_bytes!("../fixtures/embedded-font/fonts/EBGaramond12-Bold.ttf");
+    let table_count = u16::from_be_bytes(sfnt[4..6].try_into().unwrap()) as usize;
+    let mut woff = vec![0; 44 + table_count * 20];
+    woff[..4].copy_from_slice(b"wOFF");
+    woff[4..8].copy_from_slice(&sfnt[..4]);
+    woff[12..14].copy_from_slice(&(table_count as u16).to_be_bytes());
+    woff[16..20].copy_from_slice(&(sfnt.len() as u32).to_be_bytes());
+    woff[20..22].copy_from_slice(&1u16.to_be_bytes());
+
+    for index in 0..table_count {
+        let sfnt_entry = 12 + index * 16;
+        let table_offset =
+            u32::from_be_bytes(sfnt[sfnt_entry + 8..sfnt_entry + 12].try_into().unwrap()) as usize;
+        let table_length =
+            u32::from_be_bytes(sfnt[sfnt_entry + 12..sfnt_entry + 16].try_into().unwrap()) as usize;
+        let woff_entry = 44 + index * 20;
+        let woff_data_offset = woff.len() as u32;
+        woff[woff_entry..woff_entry + 4].copy_from_slice(&sfnt[sfnt_entry..sfnt_entry + 4]);
+        woff[woff_entry + 4..woff_entry + 8].copy_from_slice(&woff_data_offset.to_be_bytes());
+        woff[woff_entry + 8..woff_entry + 12].copy_from_slice(&(table_length as u32).to_be_bytes());
+        woff[woff_entry + 12..woff_entry + 16]
+            .copy_from_slice(&(table_length as u32).to_be_bytes());
+        woff[woff_entry + 16..woff_entry + 20]
+            .copy_from_slice(&sfnt[sfnt_entry + 4..sfnt_entry + 8]);
+        woff.extend_from_slice(&sfnt[table_offset..table_offset + table_length]);
+        while woff.len() % 4 != 0 {
+            woff.push(0);
+        }
+    }
+    let length = woff.len() as u32;
+    woff[8..12].copy_from_slice(&length.to_be_bytes());
+    woff
 }
 
 pub fn scripting() -> Vec<u8> {

@@ -57,7 +57,7 @@ impl ConversionWarning {
 
 /// Collects conversion warnings while preserving their insertion order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WarningCollector {
+pub(crate) struct WarningCollector {
     warnings: Vec<ConversionWarning>,
 }
 
@@ -94,19 +94,6 @@ impl WarningCollector {
         if !self.warnings.iter().any(|warning| warning.code == code) {
             self.add(code, message);
         }
-    }
-
-    /// Adds all warnings from `warnings` in iteration order.
-    pub fn extend<I>(&mut self, warnings: I)
-    where
-        I: IntoIterator<Item = ConversionWarning>,
-    {
-        self.warnings.extend(warnings);
-    }
-
-    /// Returns the number of collected warnings.
-    pub fn len(&self) -> usize {
-        self.warnings.len()
     }
 
     /// Returns whether no warnings have been collected.
@@ -152,12 +139,15 @@ impl<'a> IntoIterator for &'a WarningCollector {
 }
 
 /// The result of a successful conversion and any warnings it produced.
+///
+/// Use [`value`](Self::value) to inspect the converted value and
+/// [`warnings`](Self::warnings) to inspect warning details. Warning-bearing
+/// conversion functions return this type so callers can handle warnings
+/// without changing the converted value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversionOutcome<T> {
-    /// The converted value.
-    pub value: T,
-    /// Warnings collected during the successful conversion, in insertion order.
-    pub warnings: WarningCollector,
+    value: T,
+    warnings: WarningCollector,
 }
 
 impl<T> ConversionOutcome<T> {
@@ -170,7 +160,7 @@ impl<T> ConversionOutcome<T> {
     }
 
     /// Creates a successful outcome from an existing warning collector.
-    pub fn from_collector(value: T, warnings: WarningCollector) -> Self {
+    pub(crate) fn from_collector(value: T, warnings: WarningCollector) -> Self {
         Self { value, warnings }
     }
 
@@ -202,7 +192,7 @@ impl<T> ConversionOutcome<T> {
         &mut self.value
     }
 
-    /// Returns the public warning collection in insertion order.
+    /// Returns the warnings in insertion order.
     pub fn warnings(&self) -> &[ConversionWarning] {
         self.warnings.as_slice()
     }
@@ -217,8 +207,9 @@ impl<T> ConversionOutcome<T> {
         self.value
     }
 
-    /// Consumes the outcome and returns the value and warnings separately.
-    pub fn into_parts(self) -> (T, WarningCollector) {
-        (self.value, self.warnings)
+    /// Consumes the outcome and returns the converted value and collected warnings as a
+    /// [`Vec<ConversionWarning>`].
+    pub fn into_parts(self) -> (T, Vec<ConversionWarning>) {
+        (self.value, self.warnings.into_warnings())
     }
 }

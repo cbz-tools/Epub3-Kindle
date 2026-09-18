@@ -145,11 +145,15 @@ impl SectionIndex {
     }
 
     pub(crate) fn resolve(&self, section_href: &str, target_path: &str) -> Option<usize> {
-        let target = if target_path == section_href {
-            normalize_path(target_path)?
-        } else {
-            resolve_path(section_href, target_path)?
-        };
+        // Link processing receives both source-relative hrefs and document
+        // paths that have already been canonicalized by an earlier stage.
+        // Prefer the canonical coordinate directly; only resolve against the
+        // owning document when the supplied path is not already indexed.
+        let canonical_target = normalize_path(target_path)?;
+        if let Some(&section_index) = self.by_href.get(&canonical_target) {
+            return Some(section_index);
+        }
+        let target = resolve_path(section_href, target_path)?;
         self.by_href.get(&target).copied()
     }
 

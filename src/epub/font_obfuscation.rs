@@ -464,7 +464,9 @@ fn tuple5(values: [u32; 5]) -> (u32, u32, u32, u32, u32) {
 fn is_font_media_type(media_type: &str) -> bool {
     matches!(
         media_type.to_ascii_lowercase().as_str(),
-        "application/font-sfnt"
+        "application/font-woff"
+            | "font/woff"
+            | "application/font-sfnt"
             | "application/vnd.ms-opentype"
             | "application/x-font-opentype"
             | "application/x-font-ttf"

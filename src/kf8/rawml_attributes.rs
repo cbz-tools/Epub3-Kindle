@@ -1,15 +1,22 @@
 //! Attribute-level RawML rewriting shared by the link and resource passes.
 
+use quick_xml::{Reader, events::Event};
+
 use crate::css::advance_css_char;
 use crate::error::Result;
 use crate::xhtml::scan::{
     html_local_name_is, html_raw_text_end, html_tag_end, html_tag_name_range,
 };
 
+pub(super) enum AttributeRewrite {
+    Replace(String),
+    Remove,
+}
+
 pub(super) fn rewrite_quoted_attributes(
     source: String,
     attribute_names: &[&str],
-    mut replacement: impl FnMut(&str, &str, &str) -> Result<Option<String>>,
+    mut replacement: impl FnMut(&str, &str, &str, &str) -> Result<Option<AttributeRewrite>>,
 ) -> Result<String> {
     let mut result = None;
     let bytes = source.as_bytes();
@@ -96,17 +103,29 @@ pub(super) fn rewrite_quoted_attributes(
             let is_object_data = wanted == Some("data")
                 && html_local_name_is(&source, tag_name_start, tag_name_end, "object");
             if wanted.is_some() && (wanted != Some("data") || is_object_data) {
-                if let Some(value) = replacement(
+                if let Some(rewrite) = replacement(
                     &source,
                     &source[tag_name_start..tag_name_end],
+                    &source[tag_start..tag_end + 1],
                     &source[value_start..value_end],
                 )? {
-                    let output = result
-                        .get_or_insert_with(|| String::with_capacity(source.len() + value.len()));
-                    output.push_str(&source[output_cursor..value_start]);
-                    output.push_str(&value);
-                    output.push(quote as char);
-                    output_cursor = value_end + 1;
+                    match rewrite {
+                        AttributeRewrite::Replace(value) => {
+                            let output = result.get_or_insert_with(|| {
+                                String::with_capacity(source.len() + value.len())
+                            });
+                            output.push_str(&source[output_cursor..value_start]);
+                            output.push_str(&value);
+                            output.push(quote as char);
+                            output_cursor = value_end + 1;
+                        }
+                        AttributeRewrite::Remove => {
+                            let output =
+                                result.get_or_insert_with(|| String::with_capacity(source.len()));
+                            output.push_str(&source[output_cursor..attribute_start]);
+                            output_cursor = value_end + 1;
+                        }
+                    }
                 }
             }
             cursor = value_end + 1;
@@ -122,4 +141,23 @@ pub(super) fn rewrite_quoted_attributes(
     } else {
         Ok(source)
     }
+}
+
+pub(super) fn tag_has_attribute_token(tag: &str, name: &str, token: &str) -> bool {
+    let mut reader = Reader::from_str(tag);
+    let Ok(event) = reader.read_event() else {
+        return false;
+    };
+    let element = match event {
+        Event::Start(element) | Event::Empty(element) => element,
+        _ => return false,
+    };
+    element.attributes().flatten().any(|attribute| {
+        attribute.key.as_ref().eq_ignore_ascii_case(name.as_bytes())
+            && attribute.unescape_value().is_ok_and(|value| {
+                value
+                    .split_ascii_whitespace()
+                    .any(|value| value.eq_ignore_ascii_case(token))
+            })
+    })
 }
