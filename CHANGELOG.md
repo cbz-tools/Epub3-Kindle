@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-24
+
+### Changed
+
+- Improved compatibility with EPUBs whose `mimetype` entry is not first in the
+  ZIP archive or is compressed.
+- OPF package version `2.0` alone no longer causes immediate rejection when
+  the publication can still be processed safely.
+
 ## [0.4.0] - 2026-09-18
 
 ### Changed

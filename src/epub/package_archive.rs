@@ -193,32 +193,26 @@ pub(super) fn validate_ocf_paths(input: &[u8]) -> Result<()> {
         index += 1;
     }
     if index == 0 {
-        return Err(Error::InvalidEpub(
-            "EPUB ZIP has no entries; mimetype must be the first entry".to_owned(),
-        ));
+        return Err(Error::InvalidEpub("EPUB ZIP has no entries".to_owned()));
     }
-    let first = archive.by_index(0).map_err(|error| {
-        Error::InvalidEpub(format!("cannot inspect first EPUB ZIP entry: {error}"))
-    })?;
-    if first.name() != "mimetype" {
-        return Err(Error::InvalidEpub(
-            "EPUB mimetype entry must be the first ZIP entry".to_owned(),
-        ));
-    }
-    if first.compression() != zip::CompressionMethod::Stored {
-        return Err(Error::InvalidEpub(
-            "EPUB mimetype entry must be stored without compression".to_owned(),
-        ));
-    }
-    drop(first);
     let mut mimetype = archive
         .by_name("mimetype")
         .map_err(|error| Error::InvalidEpub(format!("cannot read EPUB mimetype entry: {error}")))?;
+    const EPUB_MIMETYPE: &[u8] = b"application/epub+zip";
+    if mimetype.size() != EPUB_MIMETYPE.len() as u64 {
+        return Err(Error::InvalidEpub(
+            "EPUB mimetype entry payload must be exactly application/epub+zip".to_owned(),
+        ));
+    }
     let mut payload = Vec::new();
-    mimetype.read_to_end(&mut payload).map_err(|error| {
-        Error::InvalidEpub(format!("cannot read EPUB mimetype entry payload: {error}"))
-    })?;
-    if payload != b"application/epub+zip" {
+    mimetype
+        .by_ref()
+        .take(EPUB_MIMETYPE.len() as u64 + 1)
+        .read_to_end(&mut payload)
+        .map_err(|error| {
+            Error::InvalidEpub(format!("cannot read EPUB mimetype entry payload: {error}"))
+        })?;
+    if payload != EPUB_MIMETYPE {
         return Err(Error::InvalidEpub(
             "EPUB mimetype entry payload must be exactly application/epub+zip".to_owned(),
         ));

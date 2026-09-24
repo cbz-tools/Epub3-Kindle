@@ -1975,6 +1975,19 @@ pub fn unsupported_package_version() -> Vec<u8> {
         .unwrap();
     opf.bytes = String::from_utf8(opf.bytes.clone())
         .unwrap()
+        .replace("version=\"3.0\"", "version=\"4.0\"")
+        .into_bytes();
+    write_zip_entries(entries)
+}
+
+pub fn package_version_2() -> Vec<u8> {
+    let mut entries = valid_ocf_entries();
+    let opf = entries
+        .iter_mut()
+        .find(|entry| entry.name == "EPUB/package.opf")
+        .unwrap();
+    opf.bytes = String::from_utf8(opf.bytes.clone())
+        .unwrap()
         .replace("version=\"3.0\"", "version=\"2.0\"")
         .into_bytes();
     write_zip_entries(entries)

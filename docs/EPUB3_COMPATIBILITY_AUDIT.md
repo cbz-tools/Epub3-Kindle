@@ -64,6 +64,10 @@ Legacy character-encoding compatibility is evidence-driven. Acceptance of one co
 
 The audit covers the IDPF EPUB 3 sample corpus under `30/`.
 
+
+Compatibility requirements may also be frozen from external same-input KindleGen characterization when they define an input-acceptance boundary not represented by the official `30/` corpus. Such characterization requirements do not change the corpus totals in this section unless a corresponding corpus item exists; they remain `PENDING` until independent integration E2E fixes the behavior.
+
+
 | Corpus item | Result |
 |---|---:|
 | Sample directories | 45 |
@@ -97,6 +101,9 @@ All generated converter artifacts in the corpus audit were non-empty and passed 
 | `EPC-012` | `EPUB-NAV` | COMPAT | EPUB CFI page-list destinations that cannot be projected to the Kindle page-map model may be dropped without affecting ordinary navigation or readable content. | `georgia-cfi` | `DROP-FEATURE` | none / 0 attributable to EPC-012 | `epc012_cfi_page_list_is_silently_dropped_and_normal_navigation_survives` | **PASS** | CFI page-list entries are omitted while ordinary navigation remains valid. |
 | `EPC-013` | `EPUB-COVER-NAV` | COMPAT | Cover navigation must resolve to the package-selected native cover resource when one exists; otherwise a valid source cover document in the spine must remain available as the navigation destination. | `indexing-for-eds-and-auths-3f`; `indexing-for-eds-and-auths-3md`; `kusamakura-japanese-vertical-writing`; `kusamakura-preview`; `kusamakura-preview-embedded` | `FALLBACK` | none / 0 attributable to EPC-013 | `epc013_suppressed_cover_navigation_uses_native_cover_destination`; `epc013_without_native_cover_resource_keeps_source_cover_destination` | **PASS** | Both native-cover and source-cover navigation paths remain valid without fabricating missing cover resources. |
 | `EPC-014` | `EPUB-HYPERLINK` | COMPAT | Unresolvable root-relative web-style hyperlinks must not abort conversion when readable link text and the surrounding document remain usable. Valid EPUB-local root-relative targets must continue to resolve normally. | `horizontally-scrollable-emakimono` | `DROP-FEATURE / DEGRADE` | `W006 / 1` | `epc014_unresolvable_root_relative_web_links_degrade_without_aborting` | **PASS** | Unresolvable web-style destinations are removed while readable link text remains. |
+| `EPC-015` | `EPUB-CONTAINER` | COMPAT | A readable EPUB container must not be rejected solely because the `mimetype` entry is not the first ZIP entry. When the container can still be interpreted safely, conversion must continue to the actual package/content compatibility checks. | synthetic `mimetype_not_first()` regression input | `TRANSPORT` | success or warning-success / 0 or 1; not 2 solely for entry order | `epc015_017::epc015_nonfirst_mimetype_container_converts_to_structurally_valid_output` | **PASS** | E2E independently confirms the fixture's first-entry order, then CLI conversion generates a non-empty AZW3 whose PalmDB structure and KF8-readable content pass independent inspection. |
+| `EPC-016` | `EPUB-CONTAINER` | COMPAT | A readable EPUB container must not be rejected solely because the `mimetype` entry is ZIP-compressed rather than stored. When the container can still be interpreted safely, conversion must continue to the actual package/content compatibility checks. | synthetic `compressed_mimetype()` regression input | `TRANSPORT` | success or warning-success / 0 or 1; not 2 solely for compression of `mimetype` | `epc015_017::epc016_compressed_mimetype_container_converts_to_structurally_valid_output` | **PASS** | E2E independently confirms `mimetype` uses Deflate, then CLI conversion generates a non-empty AZW3 whose PalmDB structure and KF8-readable content pass independent inspection. |
+| `EPC-017` | `EPUB-PACKAGE` | COMPAT | OPF `package version="2.0"` must not cause whole-publication rejection solely because of the version value. The converter must continue processing package/content structures it can interpret safely and reject only when an actual blocking incompatibility or invalid condition prevents a usable Kindle result. This requirement does not declare full EPUB 2 compatibility. | synthetic `package_version_2()` regression input | `TRANSPORT / DEGRADE` | success or warning-success / 0 or 1 when usable; 2 only for an actual blocking condition, not the version value alone | `epc015_017::epc017_opf_package_version_2_is_not_an_immediate_rejection` | **PASS** | E2E verifies the OPF declares `version="2.0"`; the CLI produces a non-empty AZW3 that passes independent PalmDB/KF8 inspection with readable content. This establishes only that the version value alone is not an entry rejection; full EPUB 2 feature support is not claimed. |
 
 ## 4. Corpus result index
 
@@ -125,7 +132,7 @@ Each `EPC-*` requirement is considered closed only when:
 
 1. the behavior is stated independently of the production implementation,
 2. at least one integration E2E verifies the compatibility contract rather than only process exit status,
-3. affected corpus samples behave consistently with the requirement,
+3. affected corpus samples behave consistently with the requirement, or, when the requirement is derived from an external characterization boundary not represented in the corpus, the fixed synthetic regression input behaves consistently with that requirement,
 4. the behavior does not weaken parent audit safety or structural-validity requirements.
 
 Corpus sample names identify where a requirement is observed. They are not requirement identities, and one sample may exercise multiple `EPC-*` requirements.

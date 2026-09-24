@@ -1,6 +1,6 @@
 [package]
 name = "epub3-kindle"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.85"
 description = "A Rust library and CLI for converting KindleGen-compatible EPUB 3 publications to Kindle KF8-only AZW3 or canonical Dual MOBI"

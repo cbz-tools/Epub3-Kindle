@@ -244,12 +244,11 @@ fn validate_package_declaration(is_opf: bool, event: &BytesStart<'_>) -> Result<
             "package namespace must be http://www.idpf.org/2007/opf".to_owned(),
         ));
     }
-    let version = attr(event, "version").ok_or_else(|| {
-        Error::InvalidEpub("package version is required and must be EPUB 3.x".to_owned())
-    })?;
-    if !version.starts_with("3.") {
+    let version = attr(event, "version")
+        .ok_or_else(|| Error::InvalidEpub("package version is required".to_owned()))?;
+    if version != "2.0" && !version.starts_with("3.") {
         return Err(Error::InvalidEpub(format!(
-            "unsupported package version {version:?}; expected EPUB 3.x"
+            "unsupported package version {version:?}; expected EPUB 2.0 or EPUB 3.x"
         )));
     }
     Ok(())

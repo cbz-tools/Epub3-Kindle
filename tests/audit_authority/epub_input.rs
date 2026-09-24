@@ -27,27 +27,29 @@ fn assert_rejected_with(input: &[u8], label: &str, expected_reason: &str) {
 }
 
 #[test]
-fn ocf_mimetype_and_container_contract_is_enforced() {
-    // REQ: OCF-001, OCF-002
+fn ocf_mimetype_is_read_by_name_and_exact_payload_is_still_required() {
+    // REQ: OCF-001, OCF-002, EPC-015, EPC-016
     let good = epub::minimal_reflowable();
     assert!(
         convert_bytes(&good, &plain()).is_ok(),
         "normative OCF baseline must convert"
     );
 
-    assert_rejected_with(
-        &epub::mimetype_not_first(),
-        "mimetype not first",
-        "mimetype",
-    );
+    for (label, input) in [
+        ("mimetype not first", epub::mimetype_not_first()),
+        ("compressed mimetype", epub::compressed_mimetype()),
+    ] {
+        let output = convert_bytes(&input, &plain())
+            .unwrap_or_else(|error| panic!("{label} input must remain processable: {error}"));
+        assert!(!output.is_empty(), "{label} conversion output is non-empty");
+        let db = PalmDb::parse(&output).expect("independent PalmDB structure");
+        let header = db.mobi_header(0).expect("independent MOBI header");
+        assert!(text(&reconstruct_text(&db, &header).expect("RawML")).contains("AUTH_VALID_OCF"));
+    }
+
     assert_rejected_with(
         &epub::wrong_mimetype_payload(),
         "wrong mimetype payload",
-        "mimetype",
-    );
-    assert_rejected_with(
-        &epub::compressed_mimetype(),
-        "compressed mimetype",
         "mimetype",
     );
 }

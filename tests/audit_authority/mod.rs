@@ -16,6 +16,7 @@ mod epc011;
 mod epc012;
 mod epc013;
 mod epc014;
+mod epc015_017;
 mod epub_input;
 mod format;
 mod image;
