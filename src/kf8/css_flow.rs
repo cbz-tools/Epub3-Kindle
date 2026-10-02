@@ -149,10 +149,14 @@ impl SectionIndex {
         // paths that have already been canonicalized by an earlier stage.
         // Prefer the canonical coordinate directly; only resolve against the
         // owning document when the supplied path is not already indexed.
-        let canonical_target = normalize_path(target_path)?;
-        if let Some(&section_index) = self.by_href.get(&canonical_target) {
-            return Some(section_index);
+        if let Some(canonical_target) = normalize_path(target_path) {
+            if let Some(&section_index) = self.by_href.get(&canonical_target) {
+                return Some(section_index);
+            }
         }
+        // A parent-relative href can be invalid as a standalone package path
+        // while resolving safely inside the container from its source document.
+        // resolve_path still rejects traversal beyond the owning path's root.
         let target = resolve_path(section_href, target_path)?;
         self.by_href.get(&target).copied()
     }
