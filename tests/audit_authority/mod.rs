@@ -18,6 +18,7 @@ mod epc013;
 mod epc014;
 mod epc015_017;
 mod epub_input;
+mod file_paths;
 mod format;
 mod image;
 mod semantics;

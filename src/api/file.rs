@@ -61,7 +61,7 @@ pub fn convert_file_with_warnings(
         ));
     }
     let input_bytes = std::fs::read(input).map_err(|source| Error::Io {
-        path: input.display().to_string(),
+        path: format!("reading input EPUB {}", input.display()),
         source,
     })?;
     let book = epub::parse_epub_with_warnings(&input_bytes, &mut warnings)?;
@@ -89,11 +89,11 @@ pub fn convert_file_with_warnings(
             }
         }?;
         writer.flush().map_err(|source| Error::Io {
-            path: temporary.display().to_string(),
+            path: format!("writing temporary output {}", temporary.display()),
             source,
         })?;
         writer.get_ref().sync_all().map_err(|source| Error::Io {
-            path: temporary.display().to_string(),
+            path: format!("syncing temporary output {}", temporary.display()),
             source,
         })?;
         Ok::<(), Error>(())
@@ -106,7 +106,11 @@ pub fn convert_file_with_warnings(
     if let Err(source) = replace_file(&temporary, output) {
         let _ = std::fs::remove_file(&temporary);
         return Err(Error::Io {
-            path: output.display().to_string(),
+            path: format!(
+                "replacing output {} with temporary file {}",
+                output.display(),
+                temporary.display()
+            ),
             source,
         });
     }
@@ -116,10 +120,13 @@ pub fn convert_file_with_warnings(
 fn map_serialization_error(error: Error, temporary: &Path) -> Error {
     match error {
         Error::Io { source, .. } => Error::Io {
-            path: temporary.display().to_string(),
+            path: format!("writing temporary output {}", temporary.display()),
             source,
         },
-        error => Error::Container(error.to_string()),
+        error => Error::Container(format!(
+            "writing temporary output {}: {error}",
+            temporary.display()
+        )),
     }
 }
 
@@ -139,14 +146,13 @@ fn output_format(output: &Path) -> Result<OutputFormat> {
 
 fn create_temporary_file(output: &Path) -> Result<(PathBuf, std::fs::File)> {
     let directory = output.parent().unwrap_or_else(|| Path::new("."));
-    let filename = output
+    output
         .file_name()
-        .ok_or_else(|| Error::Output("output path must name a file".to_owned()))?
-        .to_string_lossy();
+        .ok_or_else(|| Error::Output("output path must name a file".to_owned()))?;
     let process_id = std::process::id();
     for _ in 0..100 {
         let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary = directory.join(format!(".{filename}.{process_id}.{sequence}.tmp"));
+        let temporary = directory.join(format!(".epub3k-{process_id}-{sequence}.tmp"));
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -156,14 +162,14 @@ fn create_temporary_file(output: &Path) -> Result<(PathBuf, std::fs::File)> {
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(source) => {
                 return Err(Error::Io {
-                    path: temporary.display().to_string(),
+                    path: format!("creating temporary output {}", temporary.display()),
                     source,
                 });
             }
         }
     }
     Err(Error::Io {
-        path: directory.display().to_string(),
+        path: format!("creating temporary output in {}", directory.display()),
         source: io::Error::new(
             io::ErrorKind::AlreadyExists,
             "temporary output name collision",
@@ -185,12 +191,14 @@ fn replace_file(temporary: &Path, output: &Path) -> io::Result<()> {
                 flags: u32,
             ) -> i32;
         }
-        let existing = temporary
+        let existing_path = canonical_windows_file_path(temporary)?;
+        let destination_path = canonical_windows_file_path(output)?;
+        let existing = existing_path
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
-        let destination = output
+        let destination = destination_path
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
@@ -213,4 +221,18 @@ fn replace_file(temporary: &Path, output: &Path) -> io::Result<()> {
     {
         std::fs::rename(temporary, output)
     }
+}
+
+#[cfg(windows)]
+fn canonical_windows_file_path(path: &Path) -> io::Result<PathBuf> {
+    let filename = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path must name a file"))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    // canonicalize returns a Windows extended-length path, including for UNC
+    // paths, and resolves relative parents before they reach MoveFileExW.
+    Ok(std::fs::canonicalize(parent)?.join(filename))
 }
