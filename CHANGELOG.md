@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-17
+
+### Added
+
+- Added in-memory MOBI generation to the Rust library Memory API.
+
+### Changed
+
+- Organized the Rust library API into Memory, File, and Common modules.
+- Kept the existing CLI options, output selection, and conversion behavior
+  unchanged.
+- Increased the EPUB extraction limit from 1 GiB to 4 GiB, allowing larger
+  image-heavy EPUB files to be converted.
+
+### Removed
+
+- Breaking change for Rust library users only: removed the old top-level
+  conversion functions. The CLI interface and behavior are unchanged; see the
+  [v0.4.x to v0.5.0 migration guide on docs.rs](https://docs.rs/epub3-kindle/0.5.0/epub3_kindle/#migration-guide).
+
 ## [0.4.3] - 2026-10-13
 
 ### Fixed

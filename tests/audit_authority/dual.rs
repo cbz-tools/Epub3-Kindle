@@ -1,24 +1,18 @@
-use epub3_kindle::{Compression, ConvertOptions, convert_file};
+use epub3_kindle::{Compression, ConvertOptions, OutputFormat, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::palm::{PalmDb, assert_record_pointer, reconstruct_text};
-use crate::audit_support::temp::TempDir;
 
-fn dual(input: Vec<u8>, label: &str) -> Vec<u8> {
-    let tmp = TempDir::new(label);
-    let src = tmp.write("input.epub", &input);
-    let dst = tmp.path().join("output.mobi");
-    convert_file(
-        &src,
-        &dst,
+fn dual(input: Vec<u8>, _label: &str) -> Vec<u8> {
+    memory::convert(
+        &input,
         &ConvertOptions {
+            format: OutputFormat::Mobi,
             compression: Compression::PalmDoc,
         },
     )
-    .expect("Dual MOBI conversion");
-    std::fs::read(dst).unwrap()
+    .expect("Memory API Dual MOBI conversion")
 }
-
 #[test]
 fn dual_mobi_has_kf7_boundary_and_kf8_sections_with_consistent_pointer() {
     // REQ: DUAL-001..DUAL-005, FMT-PDB-001..FMT-PDB-003

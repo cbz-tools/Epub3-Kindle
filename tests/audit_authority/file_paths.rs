@@ -3,7 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use epub3_kindle::{ConvertOptions, convert_file};
+use epub3_kindle::{ConvertOptions, file};
 
 use crate::audit_support::palm::PalmDb;
 
@@ -46,7 +46,7 @@ impl Drop for TestDirectory {
 }
 
 fn assert_valid_output(input: &Path, output: &Path) -> Vec<u8> {
-    convert_file(input, output, &ConvertOptions::default())
+    file::convert(input, output, &ConvertOptions::default())
         .unwrap_or_else(|error| panic!("convert {}: {error}", output.display()));
     let bytes = fs::read(output).expect("read converted output");
     assert!(!bytes.is_empty(), "converted output must not be empty");
@@ -114,7 +114,7 @@ fn file_conversion_handles_long_names_paths_and_atomic_replacement() {
     fs::write(&preserved, b"keep existing output").expect("create preserved output");
     let invalid_input = temp.path().join("invalid.epub");
     fs::write(&invalid_input, b"not an EPUB").expect("create invalid EPUB");
-    assert!(convert_file(&invalid_input, &preserved, &ConvertOptions::default()).is_err());
+    assert!(file::convert(&invalid_input, &preserved, &ConvertOptions::default()).is_err());
     assert_eq!(
         fs::read(&preserved).expect("read preserved output"),
         b"keep existing output"
@@ -122,7 +122,7 @@ fn file_conversion_handles_long_names_paths_and_atomic_replacement() {
 
     let blocked_output = deep_directory.join("blocked.mobi");
     fs::create_dir(&blocked_output).expect("create replacement failure target");
-    let error = convert_file(&input, &blocked_output, &ConvertOptions::default())
+    let error = file::convert(&input, &blocked_output, &ConvertOptions::default())
         .expect_err("replacing a directory with an output file must fail");
     assert!(
         error.to_string().contains("replacing output"),

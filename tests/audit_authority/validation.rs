@@ -1,9 +1,6 @@
 use std::path::Path;
 
-use epub3_kindle::{
-    Compression, ConvertOptions, WarningCode, convert_bytes, convert_bytes_with_warnings,
-    convert_file,
-};
+use epub3_kindle::{Compression, ConvertOptions, OutputFormat, WarningCode, file, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::palm::{PalmDb, assert_record_pointer};
@@ -15,9 +12,10 @@ fn conversion_is_deterministic_for_identical_input_and_options() {
     let input = epub::minimal_reflowable();
     let options = ConvertOptions {
         compression: Compression::PalmDoc,
+        ..ConvertOptions::default()
     };
-    let a = convert_bytes(&input, &options).unwrap();
-    let b = convert_bytes(&input, &options).unwrap();
+    let a = memory::convert(&input, &options).unwrap();
+    let b = memory::convert(&input, &options).unwrap();
     assert_eq!(
         a, b,
         "same input/options must produce structurally comparable deterministic output"
@@ -32,18 +30,27 @@ fn file_api_accepts_only_epub_input_and_declared_azw3_or_mobi_outputs() {
     let bad_input = tmp.write("input.bin", &epub::minimal_reflowable());
     let options = ConvertOptions {
         compression: Compression::PalmDoc,
+        ..ConvertOptions::default()
     };
-    let input_error = convert_file(&bad_input, tmp.path().join("bad-input.azw3"), &options)
+    let input_error = file::convert(&bad_input, tmp.path().join("bad-input.azw3"), &options)
         .expect_err("non-EPUB input extension must be rejected before conversion");
     assert!(
         input_error.to_string().contains("unsupported input"),
         "input extension failure must be classified as unsupported input: {input_error}"
     );
-    assert!(convert_file(&src, tmp.path().join("book.azw3"), &options).is_ok());
-    assert!(convert_file(&src, tmp.path().join("book.mobi"), &options).is_ok());
+    let azw3_options = ConvertOptions {
+        format: OutputFormat::Mobi,
+        ..options
+    };
+    let mobi_options = ConvertOptions {
+        format: OutputFormat::Azw3,
+        ..options
+    };
+    assert!(file::convert(&src, tmp.path().join("book.AZW3"), &azw3_options).is_ok());
+    assert!(file::convert(&src, tmp.path().join("book.MoBi"), &mobi_options).is_ok());
     for bad in ["book.bin", "book.azw", "book.txt", "book"] {
         assert!(
-            convert_file(&src, tmp.path().join(bad), &options).is_err(),
+            file::convert(&src, tmp.path().join(bad), &options).is_err(),
             "unsupported output extension {bad} must be explicit error"
         );
     }
@@ -57,8 +64,9 @@ fn failed_conversion_does_not_destroy_an_existing_destination() {
     let dst = tmp.write("book.azw3", b"KEEP_EXISTING_OUTPUT");
     let options = ConvertOptions {
         compression: Compression::PalmDoc,
+        ..ConvertOptions::default()
     };
-    assert!(convert_file(&src, &dst, &options).is_err());
+    assert!(file::convert(&src, &dst, &options).is_err());
     assert_eq!(
         std::fs::read(&dst).unwrap(),
         b"KEEP_EXISTING_OUTPUT",
@@ -71,10 +79,10 @@ fn amazon_individual_html_size_boundary_warns_and_converts_at_and_above_limit() 
     // REQ: AMZ-QA-001, SEC-005
     let (below, at) = epub::html_size_boundary(29_999_999, 30_000_000);
     assert!(
-        convert_bytes(&below, &ConvertOptions::default()).is_ok(),
+        memory::convert(&below, &ConvertOptions::default()).is_ok(),
         "an individual XHTML document below Amazon's decimal 30 MB limit must convert"
     );
-    let at_outcome = convert_bytes_with_warnings(&at, &ConvertOptions::default())
+    let at_outcome = memory::convert_with_warnings(&at, &ConvertOptions::default())
         .expect("an individual XHTML document at the guidance limit must convert");
     assert!(
         !at_outcome.value().is_empty()
@@ -85,7 +93,7 @@ fn amazon_individual_html_size_boundary_warns_and_converts_at_and_above_limit() 
         "the exact-boundary output must exist with one publishing warning"
     );
     let (_, above) = epub::html_size_boundary(30_000_000, 30_000_001);
-    let above_outcome = convert_bytes_with_warnings(&above, &ConvertOptions::default())
+    let above_outcome = memory::convert_with_warnings(&above, &ConvertOptions::default())
         .expect("an individual XHTML document above the guidance limit must convert");
     assert!(!above_outcome.value().is_empty());
     assert!(
@@ -101,20 +109,20 @@ fn amazon_html_document_count_boundary_warns_and_converts_at_and_above_limit() {
     // REQ: AMZ-QA-002, SEC-006
     let accepted = epub::html_file_count(299);
     assert!(
-        convert_bytes(&accepted, &ConvertOptions::default()).is_ok(),
+        memory::convert(&accepted, &ConvertOptions::default()).is_ok(),
         "299 HTML/XHTML content documents must be accepted"
     );
     let accepted_with_resources = epub::html_file_count_with_non_html_resources(299, 64);
     assert!(
-        convert_bytes(&accepted_with_resources, &ConvertOptions::default()).is_ok(),
+        memory::convert(&accepted_with_resources, &ConvertOptions::default()).is_ok(),
         "non-HTML ZIP resources must not count toward Amazon's HTML document limit"
     );
     for count in [300, 538] {
-        let outcome =
-            convert_bytes_with_warnings(&epub::html_file_count(count), &ConvertOptions::default())
-                .unwrap_or_else(|error| {
-                    panic!("{count} HTML/XHTML documents must convert: {error}")
-                });
+        let outcome = memory::convert_with_warnings(
+            &epub::html_file_count(count),
+            &ConvertOptions::default(),
+        )
+        .unwrap_or_else(|error| panic!("{count} HTML/XHTML documents must convert: {error}"));
         assert!(!outcome.value().is_empty());
         assert!(
             outcome

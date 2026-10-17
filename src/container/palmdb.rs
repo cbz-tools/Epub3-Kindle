@@ -1,16 +1,6 @@
 use std::io::Write;
 
-#[derive(Debug, Clone)]
-pub struct PalmDbRecord {
-    pub data: Vec<u8>,
-    pub attributes: u8,
-}
-
-#[derive(Debug, Clone)]
-pub struct PalmDb {
-    pub name: String,
-    pub records: Vec<PalmDbRecord>,
-}
+pub(crate) struct PalmDb;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PalmDbEncodeOptions {
@@ -22,61 +12,8 @@ const PDB_HEADER_LEN: usize = 78;
 const PDB_RECORD_ENTRY_LEN: usize = 8;
 const PDB_NAME_MAX_LEN: usize = 31;
 const PDB_RECORD_TABLE_TERMINATOR_LEN: usize = 2;
+
 impl PalmDb {
-    pub fn new(name: impl Into<String>, records: Vec<PalmDbRecord>) -> Self {
-        Self {
-            name: name.into(),
-            records,
-        }
-    }
-
-    pub fn validate(&self) -> crate::error::Result<()> {
-        if self.records.len() > u16::MAX as usize {
-            return Err(crate::error::Error::Output(
-                "PalmDB record count exceeds u16".to_owned(),
-            ));
-        }
-        let record_table_len = self
-            .records
-            .len()
-            .checked_mul(PDB_RECORD_ENTRY_LEN)
-            .ok_or_else(|| {
-                crate::error::Error::Output("PalmDB record table overflow".to_owned())
-            })?;
-        let mut offset = PDB_HEADER_LEN
-            .checked_add(record_table_len)
-            .and_then(|value| value.checked_add(PDB_RECORD_TABLE_TERMINATOR_LEN))
-            .ok_or_else(|| crate::error::Error::Output("PalmDB offset overflow".to_owned()))?;
-        if offset > u32::MAX as usize {
-            return Err(crate::error::Error::Output(
-                "PalmDB first record offset exceeds u32".to_owned(),
-            ));
-        }
-        for record in &self.records {
-            offset = offset
-                .checked_add(record.data.len())
-                .ok_or_else(|| crate::error::Error::Output("PalmDB data overflow".to_owned()))?;
-            if offset > u32::MAX as usize {
-                return Err(crate::error::Error::Output(
-                    "PalmDB record offset exceeds u32".to_owned(),
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub fn encode_checked(&self) -> crate::error::Result<Vec<u8>> {
-        self.encode_checked_with_options(PalmDbEncodeOptions::default())
-    }
-
-    pub(crate) fn encode_checked_with_options(
-        &self,
-        options: PalmDbEncodeOptions,
-    ) -> crate::error::Result<Vec<u8>> {
-        self.validate()?;
-        Ok(self.encode_unchecked_with_timestamps(options.creation_time, options.modification_time))
-    }
-
     pub(crate) fn write_stream_checked<W: Write, I>(
         name: &str,
         record_lengths: &[usize],
@@ -199,66 +136,6 @@ impl PalmDb {
             return Err(crate::error::Error::Output(
                 "PalmDB record count mismatch".to_owned(),
             ));
-        }
-        Ok(())
-    }
-
-    fn encode_unchecked_with_timestamps(
-        &self,
-        creation_time: u32,
-        modification_time: u32,
-    ) -> Vec<u8> {
-        let record_table_len = self.records.len() * PDB_RECORD_ENTRY_LEN;
-        let first_record_offset =
-            PDB_HEADER_LEN + record_table_len + PDB_RECORD_TABLE_TERMINATOR_LEN;
-        let mut bytes = Vec::with_capacity(first_record_offset);
-        self.write_unchecked(&mut bytes, "memory", creation_time, modification_time)
-            .expect("writing to Vec cannot fail");
-        bytes
-    }
-
-    fn write_unchecked<W: Write>(
-        &self,
-        writer: &mut W,
-        path: &str,
-        creation_time: u32,
-        modification_time: u32,
-    ) -> crate::error::Result<()> {
-        let record_lengths = self
-            .records
-            .iter()
-            .map(|record| record.data.len())
-            .collect::<Vec<_>>();
-        let offsets = record_offsets(&record_lengths)?;
-        let header = make_header(
-            &self.name,
-            &offsets,
-            creation_time,
-            modification_time,
-            |index| {
-                // Record 0 keeps canonical zero attributes. Later attributes are
-                // preserved for resource/record flags; this writer leaves resource
-                // records unflagged because their role is carried by MOBI.
-                if index == 0 {
-                    0
-                } else {
-                    self.records[index].attributes
-                }
-            },
-        );
-        writer
-            .write_all(&header)
-            .map_err(|source| crate::error::Error::Io {
-                path: path.to_owned(),
-                source,
-            })?;
-        for record in &self.records {
-            writer
-                .write_all(&record.data)
-                .map_err(|source| crate::error::Error::Io {
-                    path: path.to_owned(),
-                    source,
-                })?;
         }
         Ok(())
     }

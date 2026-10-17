@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use epub3_kindle::{Compression, ConvertOptions, convert_bytes, convert_file};
+use epub3_kindle::{Compression, ConvertOptions, file, memory};
 use image::GenericImageView;
 
 use crate::audit_support::epub;
@@ -15,6 +15,7 @@ use crate::audit_support::temp::TempDir;
 fn plain() -> ConvertOptions {
     ConvertOptions {
         compression: Compression::None,
+        ..ConvertOptions::default()
     }
 }
 
@@ -39,7 +40,7 @@ fn viewport_resolution(value: &str) -> String {
 }
 
 fn target(input: &[u8]) -> TargetProjection<'static> {
-    let output = convert_bytes(input, &plain()).expect("authority fixture converts");
+    let output = memory::convert(input, &plain()).expect("authority fixture converts");
     TargetProjection::parse(Box::leak(output.into_boxed_slice()))
         .expect("target parses")
         .to_owned()
@@ -52,7 +53,7 @@ fn dual_target(
     let temp = TempDir::new(label);
     let source = temp.write("input.epub", input);
     let destination = temp.path().join("output.mobi");
-    convert_file(&source, &destination, &plain()).expect("Dual fixture converts");
+    file::convert(&source, &destination, &plain()).expect("Dual fixture converts");
     let output = std::fs::read(destination).expect("Dual output bytes");
     let leaked = Box::leak(output.into_boxed_slice());
     let db = crate::audit_support::palm::PalmDb::parse(leaked).expect("Dual PalmDB");

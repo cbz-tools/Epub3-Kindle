@@ -51,7 +51,7 @@ pub(crate) use mobi_header::MobiHeader;
 pub(crate) use palmdoc::PalmDocHeader;
 pub(crate) use rawml::SectionParts;
 pub(crate) use serializer::{
-    encode_record_zero, serialize, validate_kf8_layout, validate_kf8_section_pointers,
+    encode_record_zero, validate_kf8_layout, validate_kf8_section_pointers,
 };
 pub(crate) use text::PalmDocCompressor;
 

@@ -1,4 +1,4 @@
-use epub3_kindle::{Compression, ConvertOptions, convert_bytes, convert_file};
+use epub3_kindle::{Compression, ConvertOptions, file, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::palm::{MobiHeader, PalmDb, reconstruct_text};
@@ -7,6 +7,7 @@ use crate::audit_support::temp::TempDir;
 fn plain() -> ConvertOptions {
     ConvertOptions {
         compression: Compression::None,
+        ..ConvertOptions::default()
     }
 }
 fn rawml(out: &[u8]) -> String {
@@ -97,11 +98,12 @@ fn dual_language_output(input: &[u8], label: &str) -> Vec<u8> {
     let tmp = TempDir::new(label);
     let source = tmp.write("input.epub", input);
     let destination = tmp.path().join("output.mobi");
-    convert_file(
+    file::convert(
         &source,
         &destination,
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .expect("Dual language conversion");
@@ -114,7 +116,7 @@ fn publication_language_is_preserved_in_target_metadata_without_contradiction() 
     for (source, input) in epub::publication_languages() {
         let expected = language_expectation(source);
 
-        let azw3 = convert_bytes(&input, &plain()).expect("AZW3 language conversion");
+        let azw3 = memory::convert(&input, &plain()).expect("AZW3 language conversion");
         let azw3_db = PalmDb::parse(&azw3).expect("AZW3 PalmDB");
         let azw3_header = azw3_db.mobi_header(0).expect("AZW3 MOBI header");
         assert_language_metadata(&azw3_header, &expected);
@@ -153,7 +155,7 @@ fn publication_language_is_preserved_in_target_metadata_without_contradiction() 
 fn nested_navigation_labels_targets_and_internal_links_survive() {
     // REQ: NAV-001..NAV-008, AMZ-NAV-001..AMZ-NAV-004, SEM-003, SEM-007
     let out =
-        convert_bytes(&epub::nested_navigation(), &plain()).expect("nested navigation converts");
+        memory::convert(&epub::nested_navigation(), &plain()).expect("nested navigation converts");
     let raw = rawml(&out);
     for marker in [
         "Part A",
@@ -170,7 +172,7 @@ fn nested_navigation_labels_targets_and_internal_links_survive() {
 fn vertical_japanese_ruby_tcy_emphasis_and_unicode_are_preserved() {
     // REQ: CSS-003..CSS-006, LAYOUT-007, AMZ-CSS-001, AMZ-CSS-002, SEM-004, SEM-005, SEM-006
     let out =
-        convert_bytes(&epub::vertical_japanese(), &plain()).expect("vertical Japanese converts");
+        memory::convert(&epub::vertical_japanese(), &plain()).expect("vertical Japanese converts");
     let raw = rawml(&out);
     for marker in [
         "AUTH_JA_開始",
@@ -197,7 +199,7 @@ fn vertical_japanese_ruby_tcy_emphasis_and_unicode_are_preserved() {
 #[test]
 fn unicode_scalars_are_not_normalized_substituted_or_dropped() {
     // REQ: CONT-006, SEM-001, SEM-014
-    let out = convert_bytes(&epub::unicode_stress(), &plain()).expect("Unicode stress converts");
+    let out = memory::convert(&epub::unicode_stress(), &plain()).expect("Unicode stress converts");
     let raw = rawml(&out);
     for marker in [
         "葛󠄀",
@@ -221,7 +223,7 @@ fn unicode_scalars_are_not_normalized_substituted_or_dropped() {
 #[test]
 fn fixed_layout_metadata_and_page_order_are_preserved() {
     // REQ: LAYOUT-001..LAYOUT-006, SEM-011
-    let out = convert_bytes(&epub::fixed_layout(), &plain()).expect("fixed layout converts");
+    let out = memory::convert(&epub::fixed_layout(), &plain()).expect("fixed layout converts");
     let db = PalmDb::parse(&out).expect("PalmDB");
     let h = db.mobi_header(0).expect("MOBI header");
     let rawml = reconstruct_text(&db, &h).expect("RawML");
@@ -243,7 +245,7 @@ fn fixed_layout_metadata_and_page_order_are_preserved() {
 #[test]
 fn mixed_layout_keeps_reflowable_and_pre_paginated_sections_distinct() {
     // REQ: LAYOUT-002, LAYOUT-003, LAYOUT-008, SEM-012, SEM-013
-    let out = convert_bytes(&epub::mixed_layout(), &plain()).expect("mixed layout converts");
+    let out = memory::convert(&epub::mixed_layout(), &plain()).expect("mixed layout converts");
     let raw = rawml(&out);
     assert!(raw.contains("AUTH_MIX_REFLOW"));
     assert!(raw.contains("AUTH_MIX_FIXED"));
@@ -257,8 +259,8 @@ fn mixed_layout_keeps_reflowable_and_pre_paginated_sections_distinct() {
 #[test]
 fn accessibility_structure_and_alternative_text_remain_in_reading_content() {
     // REQ: AMZ-A11Y-001..AMZ-A11Y-003, SEM-002, SEM-008
-    let out =
-        convert_bytes(&epub::accessibility_structure(), &plain()).expect("a11y structure converts");
+    let out = memory::convert(&epub::accessibility_structure(), &plain())
+        .expect("a11y structure converts");
     let raw = rawml(&out);
     for marker in [
         "AUTH_A11Y_HEADING",
@@ -277,8 +279,8 @@ fn accessibility_structure_and_alternative_text_remain_in_reading_content() {
 #[test]
 fn ordinary_reflowable_input_stays_reflowable_without_invented_fixed_layout_or_body_typography() {
     // REQ: LAYOUT-001, LAYOUT-009, AMZ-REFLOW-001, AMZ-REFLOW-002
-    let out =
-        convert_bytes(&epub::minimal_reflowable(), &plain()).expect("minimal reflowable converts");
+    let out = memory::convert(&epub::minimal_reflowable(), &plain())
+        .expect("minimal reflowable converts");
     let db = PalmDb::parse(&out).expect("PalmDB");
     let h = db.mobi_header(0).expect("MOBI header");
     let rawml = reconstruct_text(&db, &h).expect("RawML");
@@ -304,8 +306,8 @@ fn ordinary_reflowable_input_stays_reflowable_without_invented_fixed_layout_or_b
 #[test]
 fn embedded_font_affects_only_source_selected_content_and_does_not_replace_text_semantics() {
     // REQ: FONT-006
-    let out =
-        convert_bytes(&epub::embedded_font(false), &plain()).expect("embedded font input converts");
+    let out = memory::convert(&epub::embedded_font(false), &plain())
+        .expect("embedded font input converts");
     let raw = rawml(&out);
     assert!(raw.contains("AUTH_FONT_TEXT"));
     assert!(

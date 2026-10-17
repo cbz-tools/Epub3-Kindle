@@ -1,4 +1,4 @@
-use epub3_kindle::{Compression, ConvertOptions, convert_bytes};
+use epub3_kindle::{Compression, ConvertOptions, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::semantic::{SourceModel, TargetProjection};
@@ -8,13 +8,14 @@ const LD_IMAGE_MAX_BYTES: usize = 131_072;
 fn plain() -> ConvertOptions {
     ConvertOptions {
         compression: Compression::None,
+        ..ConvertOptions::default()
     }
 }
 
 fn source_and_target(comic: bool) -> (SourceModel, TargetProjection<'static>) {
     let input = epub::large_image_resources(comic);
     let source = SourceModel::parse(&input).expect("LD image source model");
-    let output = convert_bytes(&input, &plain()).expect("LD image fixture converts");
+    let output = memory::convert(&input, &plain()).expect("LD image fixture converts");
     let output: &'static [u8] = Box::leak(output.into_boxed_slice());
     let target = TargetProjection::parse(output).expect("LD image target projection");
     (source, target)
@@ -309,7 +310,7 @@ fn small_logical_cover_png_uses_independent_jpeg_normalization_and_jpeg_is_uncha
         (epub::cover_jpeg(), "EPUB/images/cover.jpg", false),
     ] {
         let source = SourceModel::parse(&input).expect("small cover source model");
-        let output = convert_bytes(&input, &plain()).expect("small cover fixture converts");
+        let output = memory::convert(&input, &plain()).expect("small cover fixture converts");
         let output: &'static [u8] = Box::leak(output.into_boxed_slice());
         let target = TargetProjection::parse(output).expect("small cover target projection");
         let first_image = target.header.first_resource as usize;

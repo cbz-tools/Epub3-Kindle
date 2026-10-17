@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use epub3_kindle::{Compression, ConvertOptions, convert_bytes, convert_file};
+use epub3_kindle::{Compression, ConvertOptions, file, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::palm::{
@@ -13,18 +13,21 @@ use crate::audit_support::semantic::{
 use crate::audit_support::temp::TempDir;
 
 fn options(compression: Compression) -> ConvertOptions {
-    ConvertOptions { compression }
+    ConvertOptions {
+        compression,
+        ..ConvertOptions::default()
+    }
 }
 
 fn convert(input: &[u8], compression: Compression) -> Vec<u8> {
-    convert_bytes(input, &options(compression)).expect("audit fixture converts")
+    memory::convert(input, &options(compression)).expect("audit fixture converts")
 }
 
 fn dual(input: &[u8], label: &str) -> Vec<u8> {
     let tmp = TempDir::new(label);
     let src = tmp.write("input.epub", input);
     let dst = tmp.path().join("output.mobi");
-    convert_file(&src, &dst, &options(Compression::PalmDoc)).expect("Dual fixture converts");
+    file::convert(&src, &dst, &options(Compression::PalmDoc)).expect("Dual fixture converts");
     std::fs::read(dst).expect("read Dual artifact")
 }
 

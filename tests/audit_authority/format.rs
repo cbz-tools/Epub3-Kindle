@@ -1,4 +1,4 @@
-use epub3_kindle::{Compression, ConvertOptions, convert_bytes, convert_file};
+use epub3_kindle::{Compression, ConvertOptions, file, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::palm::{PalmDb, assert_record_pointer, reconstruct_text};
@@ -8,11 +8,12 @@ fn dual(input: Vec<u8>, label: &str) -> Vec<u8> {
     let tmp = TempDir::new(label);
     let src = tmp.write("input.epub", &input);
     let dst = tmp.path().join("output.mobi");
-    convert_file(
+    file::convert(
         &src,
         &dst,
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .expect("Dual MOBI conversion");
@@ -22,10 +23,11 @@ fn dual(input: Vec<u8>, label: &str) -> Vec<u8> {
 #[test]
 fn palmdb_record_table_and_mobi0_are_self_consistent() {
     // REQ: FMT-PDB-001..FMT-PDB-005, FMT-MOBI-001..FMT-MOBI-005, FMT-EXTH-001..FMT-EXTH-003
-    let out = convert_bytes(
+    let out = memory::convert(
         &epub::minimal_reflowable(),
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .unwrap();
@@ -49,17 +51,19 @@ fn palmdb_record_table_and_mobi0_are_self_consistent() {
 fn palmdoc_none_and_compressed_modes_reconstruct_identical_text() {
     // REQ: FMT-PDOC-001..FMT-PDOC-005
     let input = epub::large_text(180_000);
-    let none = convert_bytes(
+    let none = memory::convert(
         &input,
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .unwrap();
-    let compressed = convert_bytes(
+    let compressed = memory::convert(
         &input,
         &ConvertOptions {
             compression: Compression::PalmDoc,
+            ..ConvertOptions::default()
         },
     )
     .unwrap();
@@ -81,10 +85,11 @@ fn palmdoc_none_and_compressed_modes_reconstruct_identical_text() {
 #[test]
 fn all_observable_record_pointers_are_bounded_by_actual_palmdb_count() {
     // REQ: FMT-PDB-002, FMT-MOBI-004, FMT-EXTH-002, VAL-005
-    let out = convert_bytes(
+    let out = memory::convert(
         &epub::large_text(250_000),
         &ConvertOptions {
             compression: Compression::PalmDoc,
+            ..ConvertOptions::default()
         },
     )
     .unwrap();
@@ -107,10 +112,11 @@ fn all_observable_record_pointers_are_bounded_by_actual_palmdb_count() {
 #[test]
 fn cover_and_thumbnail_metadata_resolve_to_real_image_records() {
     // REQ: AMZ-COVER-001..AMZ-COVER-002, FMT-RES-001, FMT-COVER-001..FMT-COVER-002, SEM-009
-    let out = convert_bytes(
+    let out = memory::convert(
         &epub::cover_png(),
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .unwrap();
@@ -161,10 +167,11 @@ fn embedded_font_is_emitted_as_a_font_resource_for_plain_and_idpf_obfuscated_inp
 #[test]
 fn auxiliary_kf8_records_that_are_emitted_have_in_range_geometry() {
     // REQ: FMT-FDST-001..FMT-FDST-003, FMT-INDX-001..FMT-INDX-003, FMT-AUX-001..FMT-AUX-003
-    let out = convert_bytes(
+    let out = memory::convert(
         &epub::large_text(300_000),
         &ConvertOptions {
             compression: Compression::PalmDoc,
+            ..ConvertOptions::default()
         },
     )
     .unwrap();
@@ -196,10 +203,11 @@ fn auxiliary_kf8_records_that_are_emitted_have_in_range_geometry() {
 #[test]
 fn kf8_auxiliary_and_index_pointers_resolve_to_expected_record_families() {
     // REQ: FMT-FDST-001, FMT-INDX-001..FMT-INDX-003, FMT-SKEL-001, FMT-FRAG-001, FMT-NCX-001, FMT-GUIDE-001, FMT-AUX-003
-    let out = convert_bytes(
+    let out = memory::convert(
         &epub::large_text(220_000),
         &ConvertOptions {
             compression: Compression::PalmDoc,
+            ..ConvertOptions::default()
         },
     )
     .unwrap();
@@ -232,10 +240,11 @@ fn kf8_auxiliary_and_index_pointers_resolve_to_expected_record_families() {
 #[test]
 fn writing_mode_and_page_progression_metadata_do_not_contradict_source_semantics() {
     // REQ: FMT-META-525, FMT-META-527
-    let vertical = convert_bytes(
+    let vertical = memory::convert(
         &epub::vertical_japanese(),
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .expect("vertical converts");
@@ -248,10 +257,11 @@ fn writing_mode_and_page_progression_metadata_do_not_contradict_source_semantics
         );
     }
 
-    let rtl = convert_bytes(
+    let rtl = memory::convert(
         &epub::rtl_progression(),
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .expect("rtl progression converts");
@@ -268,10 +278,11 @@ fn writing_mode_and_page_progression_metadata_do_not_contradict_source_semantics
 #[test]
 fn emitted_resc_record_is_structurally_bounded_and_reflects_fixed_layout_source() {
     // REQ: FMT-RESC-001
-    let out = convert_bytes(
+    let out = memory::convert(
         &epub::fixed_layout(),
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .expect("fixed layout converts");

@@ -1,7 +1,7 @@
 use std::{fmt, ops::Index};
 
-/// A warning category emitted when conversion completes with a known semantic
-/// limitation.
+/// A warning category emitted when conversion completes successfully with a
+/// known semantic limitation.
 ///
 /// The codes map directly to the unsupported-feature handling requirements in
 /// the conversion audit: `W001` ↔ `UFH-001`, `W002` ↔ `UFH-002`, `W003` ↔
@@ -36,7 +36,9 @@ impl fmt::Display for WarningCode {
     }
 }
 
-/// A warning produced during an otherwise successful conversion.
+/// A warning produced during an otherwise successful conversion. A warning is
+/// not a conversion error; inspect its code and message when the API returns a
+/// successful [`ConversionOutcome`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversionWarning {
     /// The category of the warning.
@@ -143,7 +145,10 @@ impl<'a> IntoIterator for &'a WarningCollector {
 /// Use [`value`](Self::value) to inspect the converted value and
 /// [`warnings`](Self::warnings) to inspect warning details. Warning-bearing
 /// conversion functions return this type so callers can handle warnings
-/// without changing the converted value.
+/// without changing the converted value. A value of `()` is used by the File
+/// API because its converted bytes have already been written to the output
+/// path. This type only represents successful conversions; failures are
+/// returned as [`Error`](crate::common::Error).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversionOutcome<T> {
     value: T,

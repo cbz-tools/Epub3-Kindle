@@ -12,7 +12,7 @@ use crate::xhtml::path::normalize_path_checked;
 /// Maximum decompressed size accepted for one EPUB ZIP entry.
 const MAX_EPUB_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 /// Maximum decompressed bytes accepted across all resource reads in one EPUB.
-const MAX_EPUB_TOTAL_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_EPUB_TOTAL_EXTRACTED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Maximum number of ZIP entry extractions accepted for one EPUB.
 const MAX_EPUB_EXTRACTED_ENTRY_COUNT: usize = 100_000;
 /// Keep the first allocation independent of attacker-controlled ZIP metadata.

@@ -11,14 +11,6 @@ use crate::error::Result;
 // relying on firmware-specific handling of a shorter header record.
 const RECORD_ZERO_REFERENCE_PADDING: usize = 8192;
 
-/// Serialize a fully built KF8 book into its PalmDB/AZW3 container.
-pub(crate) fn serialize(book: super::Kf8Book) -> Result<Vec<u8>> {
-    let (record_zero, records) = serialized_records(book)?;
-    crate::container::encode_kf8_records(
-        std::iter::once(record_zero).chain(records.into_iter().map(|record| record.data)),
-    )
-}
-
 impl super::Kf8Book {
     pub(crate) fn serialize_to_writer<W: Write>(self, writer: &mut W, path: &str) -> Result<()> {
         let (record_zero, records) = serialized_records(self)?;

@@ -1,60 +1,40 @@
-use std::path::Path;
-
-use super::warnings::ConversionOutcome;
-use crate::Result;
+/// Selects the Kindle output representation.
+///
+/// The default is [`Azw3`](Self::Azw3). This option is used by the Memory API;
+/// the File API selects its representation from the destination extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    /// KF8-only AZW3 output.
+    #[default]
+    Azw3,
+    /// Dual MOBI output with a minimal KF7 compatibility section and KF8 reading content.
+    Mobi,
+}
 
 /// Controls the PalmDOC encoding used for KF8 text records.
+///
+/// The default is [`PalmDoc`](Self::PalmDoc). [`None`](Self::None) stores text
+/// records without compression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Compression {
-    /// Store text records without PalmDOC compression (KindleGen `-c0`).
+    /// Store text records without PalmDOC compression (KindleGen -c0).
     None,
-    /// Use PalmDOC compression (KindleGen `-c1`).
+    /// Use PalmDOC compression (KindleGen -c1).
     #[default]
     PalmDoc,
 }
 
-/// Options that affect conversion output.
+/// Options shared by the Memory and File APIs.
+///
+/// `Default` selects AZW3 and PalmDOC compression. The Memory API uses both
+/// fields to choose output representation and text compression. The File API
+/// uses `compression` and selects the output representation from the
+/// case-insensitive `.azw3` or `.mobi` destination extension; it ignores
+/// `format`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ConvertOptions {
+    /// The output format used by the Memory API. The default is AZW3.
+    pub format: OutputFormat,
     /// The text-record compression mode. The default is PalmDOC.
     pub compression: Compression,
-}
-
-impl ConvertOptions {
-    /// Converts an EPUB file, selecting AZW3 or Dual MOBI from the output extension.
-    ///
-    /// `.azw3` produces KF8-only AZW3; `.mobi` produces a Dual MOBI with a
-    /// minimal KF7 compatibility section and the canonical KF8 reading
-    /// rendition. The output is atomically replaced after serialization
-    /// succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unsupported input or output extension, input or
-    /// output I/O failure, unsupported or invalid EPUB content, or KF8/MOBI
-    /// construction and serialization failure.
-    pub fn convert_file(&self, input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<()> {
-        super::file::convert_file(input, output, self)
-    }
-
-    /// Converts an EPUB file and returns any warnings collected during conversion.
-    ///
-    /// `.azw3` produces KF8-only AZW3; `.mobi` produces a Dual MOBI with a
-    /// minimal KF7 compatibility section and the canonical KF8 reading
-    /// rendition. The outcome value is `()` because output is written to the
-    /// destination path; inspect warning details with
-    /// [`ConversionOutcome::warnings`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unsupported input or output extension, input or
-    /// output I/O failure, unsupported or invalid EPUB content, or KF8/MOBI
-    /// construction and serialization failure.
-    pub fn convert_file_with_warnings(
-        &self,
-        input: impl AsRef<Path>,
-        output: impl AsRef<Path>,
-    ) -> Result<ConversionOutcome<()>> {
-        super::file::convert_file_with_warnings(input, output, self)
-    }
 }

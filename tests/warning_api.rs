@@ -1,14 +1,13 @@
-use epub3_kindle::{
-    Compression, ConversionOutcome, ConvertOptions, WarningCode, convert_bytes_with_warnings,
-};
+use epub3_kindle::{Compression, ConversionOutcome, ConvertOptions, WarningCode, memory};
 
 #[test]
 fn conversion_api_exposes_empty_warnings_for_clean_success() {
     let input = include_bytes!("fixtures/public-api-and-cli/source.epub");
-    let outcome = convert_bytes_with_warnings(
+    let outcome = memory::convert_with_warnings(
         input,
         &ConvertOptions {
             compression: Compression::None,
+            ..ConvertOptions::default()
         },
     )
     .expect("existing API fixture converts");

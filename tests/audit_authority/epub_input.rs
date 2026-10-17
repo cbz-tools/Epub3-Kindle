@@ -1,6 +1,4 @@
-use epub3_kindle::{
-    Compression, ConvertOptions, WarningCode, convert_bytes, convert_bytes_with_warnings,
-};
+use epub3_kindle::{Compression, ConvertOptions, WarningCode, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::palm::{PalmDb, reconstruct_text};
@@ -8,6 +6,7 @@ use crate::audit_support::palm::{PalmDb, reconstruct_text};
 fn plain() -> ConvertOptions {
     ConvertOptions {
         compression: Compression::None,
+        ..ConvertOptions::default()
     }
 }
 fn text(bytes: &[u8]) -> String {
@@ -15,7 +14,7 @@ fn text(bytes: &[u8]) -> String {
 }
 
 fn assert_rejected_with(input: &[u8], label: &str, expected_reason: &str) {
-    let error = match convert_bytes(input, &plain()) {
+    let error = match memory::convert(input, &plain()) {
         Ok(_) => panic!("{label} must be rejected with an explicit failure"),
         Err(error) => error,
     };
@@ -31,7 +30,7 @@ fn ocf_mimetype_is_read_by_name_and_exact_payload_is_still_required() {
     // REQ: OCF-001, OCF-002, EPC-015, EPC-016
     let good = epub::minimal_reflowable();
     assert!(
-        convert_bytes(&good, &plain()).is_ok(),
+        memory::convert(&good, &plain()).is_ok(),
         "normative OCF baseline must convert"
     );
 
@@ -39,7 +38,7 @@ fn ocf_mimetype_is_read_by_name_and_exact_payload_is_still_required() {
         ("mimetype not first", epub::mimetype_not_first()),
         ("compressed mimetype", epub::compressed_mimetype()),
     ] {
-        let output = convert_bytes(&input, &plain())
+        let output = memory::convert(&input, &plain())
             .unwrap_or_else(|error| panic!("{label} input must remain processable: {error}"));
         assert!(!output.is_empty(), "{label} conversion output is non-empty");
         let db = PalmDb::parse(&output).expect("independent PalmDB structure");
@@ -74,7 +73,7 @@ fn ocf_accepts_utf8_paths_and_internal_two_dot_resolution() {
             "AUTH_PACKAGE_BASE",
         ),
     ] {
-        let out = convert_bytes(&input, &plain())
+        let out = memory::convert(&input, &plain())
             .unwrap_or_else(|error| panic!("{label} must convert: {error}"));
         let db = PalmDb::parse(&out).expect("independent PalmDB parse");
         let header = db.mobi_header(0).expect("MOBI header");
@@ -138,7 +137,7 @@ fn malformed_zip_and_encrypted_entries_have_isolated_principal_reasons() {
 #[test]
 fn package_metadata_and_spine_order_survive_conversion() {
     // REQ: PKG-001..PKG-008, SEM-001, SEM-002, SEM-010
-    let out = convert_bytes(&epub::metadata_and_spine(), &plain())
+    let out = memory::convert(&epub::metadata_and_spine(), &plain())
         .expect("metadata/spine input converts");
     let db = PalmDb::parse(&out).expect("independent PalmDB parse");
     let h = db.mobi_header(0).expect("KF8 record 0");
@@ -154,7 +153,7 @@ fn package_metadata_and_spine_order_survive_conversion() {
 #[test]
 fn resource_paths_css_imports_shared_images_and_links_remain_resolvable() {
     // REQ: RES-001..RES-007, CONT-004, CSS-001, SEM-007, SEM-009, FMT-RES-001..FMT-RES-003
-    let out = convert_bytes(&epub::resource_graph(), &plain()).expect("resource graph converts");
+    let out = memory::convert(&epub::resource_graph(), &plain()).expect("resource graph converts");
     let db = PalmDb::parse(&out).expect("PalmDB parse");
     let h = db.mobi_header(0).expect("MOBI header");
     let raw = text(&reconstruct_text(&db, &h).expect("RawML"));
@@ -177,19 +176,19 @@ fn resource_paths_css_imports_shared_images_and_links_remain_resolvable() {
 #[test]
 fn missing_spine_target_is_rejected() {
     // REQ: PKG-005
-    assert!(convert_bytes(&epub::broken_spine(), &plain()).is_err());
+    assert!(memory::convert(&epub::broken_spine(), &plain()).is_err());
 }
 
 #[test]
 fn foreign_spine_resource_without_required_fallback_is_rejected() {
     // REQ: RES-008, PKG-007
-    assert!(convert_bytes(&epub::foreign_without_fallback(), &plain()).is_err());
+    assert!(memory::convert(&epub::foreign_without_fallback(), &plain()).is_err());
 }
 
 #[test]
 fn valid_foreign_resource_fallback_selects_local_content_document() {
     // REQ: PKG-007, RES-002
-    let outcome = convert_bytes_with_warnings(&epub::foreign_with_fallback(), &plain())
+    let outcome = memory::convert_with_warnings(&epub::foreign_with_fallback(), &plain())
         .expect("foreign spine resource with a valid fallback converts");
     assert!(
         outcome
@@ -208,7 +207,7 @@ fn valid_foreign_resource_fallback_selects_local_content_document() {
 #[test]
 fn valid_foreign_binary_fallback_replaces_unsupported_resource() {
     // REQ: RES-002, RES-008
-    let outcome = convert_bytes_with_warnings(&epub::foreign_binary_with_fallback(), &plain())
+    let outcome = memory::convert_with_warnings(&epub::foreign_binary_with_fallback(), &plain())
         .expect("an unsupported binary with a valid fallback must convert");
     assert!(
         outcome
@@ -242,7 +241,7 @@ fn valid_foreign_binary_fallback_replaces_unsupported_resource() {
 fn remote_resource_is_never_silently_fetched_or_dropped() {
     // REQ: RES-006, SEC-003, SEM-007
     let input = epub::remote_resource();
-    match convert_bytes(&input, &plain()) {
+    match memory::convert(&input, &plain()) {
         Err(error) => {
             let message = error.to_string().to_ascii_lowercase();
             assert!(
@@ -269,7 +268,7 @@ fn remote_resource_is_never_silently_fetched_or_dropped() {
 #[test]
 fn scripting_input_is_sanitized_with_a_warning_and_readable_text_preserved() {
     // REQ: CONT-009, SEC-001, SEC-002
-    let outcome = convert_bytes_with_warnings(&epub::scripting(), &plain())
+    let outcome = memory::convert_with_warnings(&epub::scripting(), &plain())
         .expect("scripting semantics must be safely degraded");
     let db = PalmDb::parse(outcome.value()).expect("independent PalmDB parse");
     let header = db.mobi_header(0).expect("MOBI header");
@@ -288,7 +287,7 @@ fn scripting_input_is_sanitized_with_a_warning_and_readable_text_preserved() {
 #[test]
 fn kindle_unsupported_css_that_changes_visible_content_warns_and_preserves_text() {
     // REQ: CSS-007, CSS-008, AMZ-CSS-002, SEM-006
-    let outcome = convert_bytes_with_warnings(&epub::unsupported_css(), &plain())
+    let outcome = memory::convert_with_warnings(&epub::unsupported_css(), &plain())
         .expect("unsupported but processable CSS must degrade safely");
     let db = PalmDb::parse(outcome.value()).expect("independent PalmDB parse");
     let header = db.mobi_header(0).expect("MOBI header");
@@ -306,14 +305,14 @@ fn kindle_unsupported_css_that_changes_visible_content_warns_and_preserves_text(
 fn malformed_xhtml_and_navigation_contract_violations_fail_explicitly() {
     // REQ: CONT-001, NAV-001, NAV-002
     assert_rejected_with(&epub::malformed_xhtml(), "malformed XHTML", "xml");
-    assert!(convert_bytes(&epub::missing_navigation(), &plain()).is_err());
-    assert!(convert_bytes(&epub::duplicate_toc_navigation(), &plain()).is_err());
+    assert!(memory::convert(&epub::missing_navigation(), &plain()).is_err());
+    assert!(memory::convert(&epub::duplicate_toc_navigation(), &plain()).is_err());
 }
 
 #[test]
 fn unsupported_media_overlay_warns_while_container_path_escape_remains_an_error() {
     // REQ: CONT-010, SEC-004, SEC-007
-    let outcome = convert_bytes_with_warnings(&epub::media_overlay(), &plain())
+    let outcome = memory::convert_with_warnings(&epub::media_overlay(), &plain())
         .expect("media overlay playback must be safely degraded");
     let db = PalmDb::parse(outcome.value()).expect("independent PalmDB parse");
     let header = db.mobi_header(0).expect("MOBI header");
@@ -336,7 +335,7 @@ fn unsupported_media_overlay_warns_while_container_path_escape_remains_an_error(
 fn recoverable_viewport_degradation_converts_with_w004() {
     // REQ: AMZ-CSS-004
     let outcome =
-        convert_bytes_with_warnings(&epub::fixed_layout_with_degraded_viewport(), &plain())
+        memory::convert_with_warnings(&epub::fixed_layout_with_degraded_viewport(), &plain())
             .expect("a recoverable viewport variant must convert");
     assert!(!outcome.value().is_empty());
     assert!(
@@ -350,14 +349,14 @@ fn recoverable_viewport_degradation_converts_with_w004() {
 #[test]
 fn font_encryption_and_zero_byte_font_negative_boundaries_are_explicit() {
     // REQ: FONT-004, FONT-005, AMZ-QA-004
-    assert!(convert_bytes(&epub::invalid_font_encryption(), &plain()).is_err());
-    assert!(convert_bytes(&epub::zero_byte_font(), &plain()).is_err());
+    assert!(memory::convert(&epub::invalid_font_encryption(), &plain()).is_err());
+    assert!(memory::convert(&epub::zero_byte_font(), &plain()).is_err());
 }
 
 #[test]
 fn kindle_media_queries_are_preserved_without_inverting_kf8_and_mobi_branches() {
     // REQ: CSS-009, AMZ-CSS-003
-    let out = convert_bytes(&epub::media_queries(), &plain())
+    let out = memory::convert(&epub::media_queries(), &plain())
         .expect("supported Kindle media-query input converts");
     assert!(out.windows(b"amzn-kf8".len()).any(|w| w == b"amzn-kf8"));
     assert!(out.windows(b"amzn-mobi".len()).any(|w| w == b"amzn-mobi"));
@@ -370,7 +369,7 @@ fn kindle_media_queries_are_preserved_without_inverting_kf8_and_mobi_branches() 
 #[test]
 fn unsupported_scrolled_layout_is_not_silently_treated_as_equivalent_paginated_layout() {
     // REQ: LAYOUT-010
-    assert!(convert_bytes(&epub::unsupported_layout_flow(), &plain()).is_err());
+    assert!(memory::convert(&epub::unsupported_layout_flow(), &plain()).is_err());
 }
 
 #[test]
@@ -411,7 +410,7 @@ fn malformed_package_is_rejected_and_metadata_extensions_do_not_replace_required
         "unresolved package unique identifier",
         "unique-identifier",
     );
-    let out = convert_bytes(&epub::metadata_extension(), &plain())
+    let out = memory::convert(&epub::metadata_extension(), &plain())
         .expect("unknown optional metadata must not corrupt required publication semantics");
     let db = PalmDb::parse(&out).expect("PalmDB parse");
     let h = db.mobi_header(0).expect("MOBI header");
@@ -427,7 +426,7 @@ fn malformed_package_is_rejected_and_metadata_extensions_do_not_replace_required
 #[test]
 fn manifest_ids_are_unique_and_manifest_coherence_is_checked() {
     // REQ: PKG-004
-    let valid = convert_bytes(&epub::resource_graph(), &plain())
+    let valid = memory::convert(&epub::resource_graph(), &plain())
         .expect("coherent manifest href/media-type/properties must convert");
     assert!(!valid.is_empty(), "coherent manifest must produce output");
     assert_rejected_with(
@@ -440,7 +439,7 @@ fn manifest_ids_are_unique_and_manifest_coherence_is_checked() {
 #[test]
 fn non_linear_spine_item_does_not_reorder_linear_reading_sequence() {
     // REQ: PKG-008
-    let out = convert_bytes(&epub::linear_semantics(), &plain())
+    let out = memory::convert(&epub::linear_semantics(), &plain())
         .expect("linear/non-linear spine input converts");
     let db = PalmDb::parse(&out).expect("PalmDB parse");
     let h = db.mobi_header(0).expect("MOBI header");

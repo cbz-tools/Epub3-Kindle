@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use epub3_kindle::{Compression, ConvertOptions, convert_bytes, convert_file};
+use epub3_kindle::{Compression, ConvertOptions, file, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::palm::reconstruct_text;
@@ -13,12 +13,13 @@ use crate::audit_support::temp::TempDir;
 fn options() -> ConvertOptions {
     ConvertOptions {
         compression: Compression::None,
+        ..ConvertOptions::default()
     }
 }
 
 fn project(input: &[u8]) -> (SourceModel, TargetProjection<'static>) {
     let source = SourceModel::parse(input).expect("independent source semantic model");
-    let output = convert_bytes(input, &options()).expect("authority fixture converts");
+    let output = memory::convert(input, &options()).expect("authority fixture converts");
     let output: &'static [u8] = Box::leak(output.into_boxed_slice());
     let target = TargetProjection::parse(output).expect("independent target projection");
     (source, target)
@@ -345,7 +346,8 @@ fn batch2_negative_data_uri_images_are_safely_degraded_in_css_and_xhtml() {
     // failure, corrupt decoded bytes, and oversized image dimensions.
     let input = epub::unsafe_data_uri_images();
     let source = SourceModel::parse(&input).expect("independent source semantic model");
-    let output = convert_bytes(&input, &options()).expect("unsafe inline data must degrade safely");
+    let output =
+        memory::convert(&input, &options()).expect("unsafe inline data must degrade safely");
     let output: &'static [u8] = Box::leak(output.into_boxed_slice());
     let target = TargetProjection::parse(output).expect("independent target projection");
 
@@ -964,7 +966,7 @@ fn batch2_layout_cover_font_and_file_api_artifacts_are_independently_projected()
     let tmp = TempDir::new("batch2-file-api");
     let src = tmp.write("input.epub", &epub::minimal_reflowable());
     let dst = tmp.path().join("artifact.azw3");
-    convert_file(&src, &dst, &options()).expect("File API .azw3 conversion");
+    file::convert(&src, &dst, &options()).expect("File API .azw3 conversion");
     let bytes = std::fs::read(&dst).expect("read exact .azw3 artifact");
     let target = TargetProjection::parse(Box::leak(bytes.into_boxed_slice()))
         .expect("independent PalmDB/MOBI/KF8 parse of .azw3 artifact");
@@ -981,7 +983,7 @@ fn batch2_negative_css_constructs_remain_isolated() {
         (epub::unsupported_css_pseudo(), "pseudo-elements"),
         (epub::unsupported_css_counter(), "counter-reset"),
     ] {
-        let outcome = epub3_kindle::convert_bytes_with_warnings(&input, &options())
+        let outcome = epub3_kindle::memory::convert_with_warnings(&input, &options())
             .expect("isolated unsupported CSS must degrade safely");
         assert!(
             outcome

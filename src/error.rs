@@ -3,7 +3,13 @@ use thiserror::Error;
 /// Result type returned by conversion and parsing operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Errors that can occur while reading, converting, or writing a book.
+/// Errors that can occur while reading, converting, serializing, or writing a
+/// book.
+///
+/// EPUB ZIP/XML/input problems retain their input-oriented categories. KF8
+/// construction errors use [`Kf8Build`](Self::Kf8Build), and AZW3/MOBI
+/// serialization errors use [`Container`](Self::Container). File operations
+/// use [`Io`](Self::Io), with a path description and the underlying I/O error.
 #[derive(Debug, Error)]
 pub enum Error {
     /// An input or output I/O operation failed.

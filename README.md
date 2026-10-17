@@ -150,18 +150,45 @@ If `-o` is omitted, the input extension is replaced with `.mobi`. An explicit `.
 
 ## Library
 
-```rust
-use epub3_kindle::{convert_bytes, Compression, ConvertOptions};
+Shared options and result types are available from `epub3_kindle::common`.
 
-let azw3 = convert_bytes(
-    &epub_bytes,
-    &ConvertOptions { compression: Compression::PalmDoc },
-)?;
+### Memory API
+
+The Memory API accepts EPUB bytes and returns AZW3 or MOBI bytes according to `ConvertOptions.format`.
+
+```rust
+use epub3_kindle::common::{Compression, ConvertOptions, OutputFormat};
+use epub3_kindle::memory;
+
+let options = ConvertOptions {
+    format: OutputFormat::Azw3,
+    compression: Compression::PalmDoc,
+};
+let azw3 = memory::convert(&epub_bytes, &options)?;
+
+let options = ConvertOptions {
+    format: OutputFormat::Mobi,
+    ..options
+};
+let mobi = memory::convert(&epub_bytes, &options)?;
 ```
 
-The crate also provides `convert_file(input, output, options)`. The file API selects the output format from the destination extension: `.azw3` produces AZW3, while `.mobi` produces MOBI with a minimal KF7 compatibility section plus KF8 reading content. The destination is replaced from a same-directory temporary file only after serialization succeeds.
+### File API
 
-`convert_file` serializes the result to a temporary file in the same directory and atomically replaces the destination after successful serialization. It uses no global mutable conversion state, shared temporary file names, current-directory changes, or internal parallel runtime. Independent conversions can be invoked safely in parallel. As with ordinary file writing, coordinating multiple concurrent conversions to the exact same output path is the caller's responsibility.
+The File API accepts an EPUB input path and selects the output format from the destination extension. It accepts `.azw3` and `.mobi`, case-insensitively; `ConvertOptions.format` is ignored.
+
+```rust
+use epub3_kindle::common::ConvertOptions;
+use epub3_kindle::file;
+
+let options = ConvertOptions::default();
+file::convert("book.epub", "book.azw3", &options)?;
+file::convert("book.epub", "book.mobi", &options)?;
+```
+
+File output is serialized to a same-directory temporary file and replaces the destination only after serialization succeeds. The warning-reporting variants are `memory::convert_with_warnings` and `file::convert_with_warnings`.
+
+Independent conversions can run concurrently. Conversion results do not use shared global mutable state or a persistent parallel runtime; large-image work may use scoped standard threads within a conversion. Callers must coordinate concurrent writes to the same output path.
 
 ## Limitations
 

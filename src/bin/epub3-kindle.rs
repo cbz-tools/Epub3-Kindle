@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use epub3_kindle::{Compression, ConversionWarning, ConvertOptions};
+use epub3_kindle::common::{Compression, ConversionWarning, ConvertOptions};
+use epub3_kindle::file;
 
 const SUCCESS_EXIT_CODE: i32 = 0;
 const WARNING_EXIT_CODE: i32 = 1;
@@ -72,8 +73,11 @@ fn main() {
             }
         );
     }
-    let options = ConvertOptions { compression };
-    let outcome = match options.convert_file_with_warnings(&input, &output) {
+    let options = ConvertOptions {
+        compression,
+        ..ConvertOptions::default()
+    };
+    let outcome = match file::convert_with_warnings(&input, &output, &options) {
         Ok(outcome) => outcome,
         Err(error) => return fail(&error.to_string()),
     };

@@ -148,18 +148,45 @@ epub3-kindle <input.epub> [-o <output.azw3|output.mobi>] [-c0 | -c1]
 
 ## ライブラリ
 
-```rust
-use epub3_kindle::{convert_bytes, Compression, ConvertOptions};
+共通のオプションと結果型は `epub3_kindle::common` から利用できます。
 
-let azw3 = convert_bytes(
-    &epub_bytes,
-    &ConvertOptions { compression: Compression::PalmDoc },
-)?;
+### Memory API
+
+Memory APIはEPUBバイト列を受け取り、`ConvertOptions.format` に応じてAZW3またはMOBIのバイト列を返します。
+
+```rust
+use epub3_kindle::common::{Compression, ConvertOptions, OutputFormat};
+use epub3_kindle::memory;
+
+let options = ConvertOptions {
+    format: OutputFormat::Azw3,
+    compression: Compression::PalmDoc,
+};
+let azw3 = memory::convert(&epub_bytes, &options)?;
+
+let options = ConvertOptions {
+    format: OutputFormat::Mobi,
+    ..options
+};
+let mobi = memory::convert(&epub_bytes, &options)?;
 ```
 
-このcrateは `convert_file(input, output, options)` も提供します。ファイルAPIは出力先の拡張子で形式を選択し、`.azw3`ではAZW3、`.mobi`では最小KF7互換セクションとKF8本文からなるMOBIを生成します。シリアライズが成功した後にのみ、同じディレクトリの一時ファイルから出力先を置き換えます。
+### File API
 
-`convert_file`では、変換結果を同じディレクトリの一時ファイルへシリアライズし、成功後に出力先をアトミックに置き換えます。グローバルな可変変換状態、共有一時ファイル名、カレントディレクトリの変更、内部並列ランタイムは使用しません。独立した変換は安全に並行実行できます。通常のファイル書き込みと同様、完全に同じ出力パスへ複数の変換を同時実行する場合の調整は呼び出し側の責任です。
+File APIはEPUB入力パスを受け取り、出力先の拡張子で形式を選択します。拡張子は大文字・小文字を区別せず、`.azw3` と `.mobi` を受け付けます。`ConvertOptions.format` は参照しません。
+
+```rust
+use epub3_kindle::common::ConvertOptions;
+use epub3_kindle::file;
+
+let options = ConvertOptions::default();
+file::convert("book.epub", "book.azw3", &options)?;
+file::convert("book.epub", "book.mobi", &options)?;
+```
+
+ファイル出力は同じディレクトリの一時ファイルへシリアライズし、成功後にのみ出力先を置き換えます。警告を返す関数は `memory::convert_with_warnings` と `file::convert_with_warnings` です。
+
+独立した変換呼び出しは並列実行できます。変換結果を共有するグローバルな可変状態や常駐型の並列ランタイムは使用しません。大きな画像の処理では、各変換に属するスコープ付き標準スレッドを使う場合があります。同一の出力先へ並列書き込みする場合は、呼び出し側で調整してください。
 
 ## 制限事項
 

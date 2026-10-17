@@ -2,54 +2,65 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::warnings::{ConversionOutcome, WarningCollector};
-use crate::{Compression, ConvertOptions, Error, Result, epub, kf8, kindle, mobi};
+use super::conversion::build_kf8;
+use super::warnings::ConversionOutcome;
+use crate::{ConvertOptions, Error, OutputFormat, Result, mobi};
 
 const SUPPORTED_OUTPUT_ERROR: &str =
     "unsupported output extension; supported output extensions are .azw3 and .mobi";
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Converts an EPUB file to AZW3 or Dual MOBI, replacing the destination atomically.
+/// Converts an EPUB file to AZW3 or Dual MOBI, replacing the destination only
+/// after successful serialization.
 ///
-/// The output extension selects the format: `.azw3` produces KF8-only AZW3,
-/// while `.mobi` produces a Dual MOBI with a minimal KF7 compatibility section
-/// and the canonical KF8 reading rendition. A same-directory temporary file is
-/// replaced into the destination only after serialization succeeds.
+/// The input extension must be `.epub`, matched without regard to ASCII letter
+/// case. The output extension selects the format and is also matched without
+/// regard to ASCII letter case: `.azw3` produces KF8-only AZW3, while `.mobi`
+/// produces a Dual MOBI with a minimal KF7 compatibility section and the
+/// canonical KF8 reading rendition. `options.format` is ignored; compression
+/// comes from `options.compression`.
+///
+/// The output is written to a same-directory temporary file, flushed and synced,
+/// and moved over the destination only after serialization succeeds. Calls to
+/// distinct output paths can run concurrently. Callers must coordinate
+/// concurrent writes to the same output path.
 ///
 /// # Errors
 ///
-/// Returns an error for an unsupported input or output extension, input or
-/// output I/O failure, unsupported or invalid EPUB content, or KF8/MOBI
-/// construction and serialization failure.
-pub fn convert_file(
+/// Returns [`Error::UnsupportedInput`](crate::common::Error::UnsupportedInput)
+/// or [`Error::Output`](crate::common::Error::Output) for unsupported
+/// extensions; [`Error::Io`](crate::common::Error::Io) for input, temporary
+/// output, sync, or replacement failures; or an error for invalid/unsupported
+/// EPUB content, KF8/MOBI construction, or serialization.
+pub fn convert(
     input: impl AsRef<Path>,
     output: impl AsRef<Path>,
     options: &ConvertOptions,
 ) -> Result<()> {
-    convert_file_with_warnings(input, output, options).map(|_| ())
+    convert_with_warnings(input, output, options).map(|_| ())
 }
 
 /// Converts an EPUB file and returns any warnings collected during conversion.
 ///
-/// The output extension selects the format: `.azw3` produces KF8-only AZW3,
-/// while `.mobi` produces a Dual MOBI with a minimal KF7 compatibility section
-/// and the canonical KF8 reading rendition. Inspect warnings with
-/// [`ConversionOutcome::warnings`]; the outcome value is `()` because output is
-/// written to the destination path.
+/// The input extension must be `.epub`. The case-insensitive output extension
+/// selects KF8-only AZW3 (`.azw3`) or Dual MOBI (`.mobi`); `options.format` is
+/// ignored and `options.compression` is used. The same-directory temporary is
+/// moved over the destination only after serialization succeeds. Inspect
+/// warnings with [`ConversionOutcome::warnings`](crate::common::ConversionOutcome::warnings);
+/// the outcome value is `()` because output is written to the destination.
 ///
 /// # Errors
 ///
-/// Returns an error for an unsupported input or output extension, input or
-/// output I/O failure, unsupported or invalid EPUB content, or KF8/MOBI
-/// construction and serialization failure.
-pub fn convert_file_with_warnings(
+/// Returns an unsupported-extension, I/O, invalid/unsupported EPUB, KF8/MOBI
+/// construction, or serialization error. The output path is not replaced when
+/// conversion or serialization fails before the replacement step.
+pub fn convert_with_warnings(
     input: impl AsRef<Path>,
     output: impl AsRef<Path>,
     options: &ConvertOptions,
 ) -> Result<ConversionOutcome<()>> {
     let input = input.as_ref();
     let output = output.as_ref();
-    let mut warnings = WarningCollector::new();
     let output_format = output_format(output)?;
     if input
         .extension()
@@ -64,23 +75,15 @@ pub fn convert_file_with_warnings(
         path: format!("reading input EPUB {}", input.display()),
         source,
     })?;
-    let book = epub::parse_epub_with_warnings(&input_bytes, &mut warnings)?;
-    // parse_epub materializes all data needed by Book, so the input ZIP buffer
-    // no longer needs to remain live during normalization and serialization.
+    let (kf8_book, warnings) = build_kf8(&input_bytes, options.compression)?;
+    // Parsing materializes all data needed by the Kindle representation.
     drop(input_bytes);
-    let kindle_book = kindle::normalize(book);
-    let compression = match options.compression {
-        Compression::None => kf8::TextCompression::None,
-        Compression::PalmDoc => kf8::TextCompression::PalmDoc,
-    };
-    let kf8_book = kf8::build(kindle_book, compression, &mut warnings)
-        .map_err(|error| Error::Kf8Build(error.to_string()))?;
 
     let (temporary, file) = create_temporary_file(output)?;
     let write_result = (|| {
         let mut writer = BufWriter::new(file);
         match output_format {
-            OutputFormat::Kf8 => kf8_book
+            OutputFormat::Azw3 => kf8_book
                 .serialize_to_writer(&mut writer, &temporary.display().to_string())
                 .map_err(|error| map_serialization_error(error, &temporary)),
             OutputFormat::Mobi => {
@@ -130,15 +133,9 @@ fn map_serialization_error(error: Error, temporary: &Path) -> Error {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutputFormat {
-    Kf8,
-    Mobi,
-}
-
 fn output_format(output: &Path) -> Result<OutputFormat> {
     match output.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("azw3") => Ok(OutputFormat::Kf8),
+        Some(extension) if extension.eq_ignore_ascii_case("azw3") => Ok(OutputFormat::Azw3),
         Some(extension) if extension.eq_ignore_ascii_case("mobi") => Ok(OutputFormat::Mobi),
         _ => Err(Error::Output(SUPPORTED_OUTPUT_ERROR.to_owned())),
     }
