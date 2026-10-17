@@ -10,6 +10,8 @@ use zip::ZipWriter;
 use zip::unstable::write::FileOptionsExt;
 use zip::write::SimpleFileOptions;
 
+pub const IMAGE_OPTIMIZATION_LIMIT_BYTES: usize = 512 * 1024;
+
 const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
@@ -679,7 +681,7 @@ pub fn resource_graph() -> Vec<u8> {
 /// Deterministic image corpus for the Kindle LD image-size contract.
 ///
 /// The pixel stream is deliberately high-entropy so the encoded JPEG and PNG
-/// both remain above the 128 KiB source boundary while the small controls stay
+/// both remain above the 512 KiB source boundary while the small controls stay
 /// well below it.
 pub fn large_image_resources(comic: bool) -> Vec<u8> {
     let book_type = if comic {
@@ -729,12 +731,12 @@ pub fn large_image_resources(comic: bool) -> Vec<u8> {
 }
 
 pub fn audit_large_jpeg() -> Vec<u8> {
-    let image = audit_rgb_image(640, 480);
+    let image = audit_rgb_image(1024, 768);
     let mut encoded = Vec::new();
     JpegEncoder::new_with_quality(&mut encoded, 95)
         .encode_image(&DynamicImage::ImageRgb8(image))
         .unwrap();
-    assert!(encoded.len() > 131_072);
+    assert!(encoded.len() > IMAGE_OPTIMIZATION_LIMIT_BYTES);
     encoded
 }
 
@@ -749,12 +751,12 @@ pub fn audit_large_png() -> Vec<u8> {
             ColorType::Rgba8.into(),
         )
         .unwrap();
-    assert!(encoded.len() > 131_072);
+    assert!(encoded.len() > IMAGE_OPTIMIZATION_LIMIT_BYTES);
     encoded
 }
 
 pub fn audit_undershoot_jpeg() -> Vec<u8> {
-    let image = RgbImage::from_fn(1024, 768, |x, y| {
+    let image = RgbImage::from_fn(2048, 1536, |x, y| {
         if (x + y) % 2 == 0 {
             image::Rgb([0, 0, 0])
         } else {
@@ -765,12 +767,12 @@ pub fn audit_undershoot_jpeg() -> Vec<u8> {
     JpegEncoder::new_with_quality(&mut encoded, 95)
         .encode_image(&DynamicImage::ImageRgb8(image))
         .unwrap();
-    assert!(encoded.len() > 131_072);
+    assert!(encoded.len() > IMAGE_OPTIMIZATION_LIMIT_BYTES);
     encoded
 }
 
 pub fn audit_boundary_png() -> Vec<u8> {
-    audit_padded_png(131_072)
+    audit_padded_png(IMAGE_OPTIMIZATION_LIMIT_BYTES)
 }
 
 pub fn audit_medium_png() -> Vec<u8> {
@@ -797,6 +799,85 @@ fn audit_padded_png(target_length: usize) -> Vec<u8> {
     png
 }
 
+pub fn image_size_boundary_resources() -> Vec<u8> {
+    let limit = IMAGE_OPTIMIZATION_LIMIT_BYTES;
+    let images = [
+        (
+            "jpeg-below",
+            "jpeg-below.jpg",
+            "image/jpeg",
+            audit_padded_jpeg(limit - 1),
+        ),
+        (
+            "jpeg-boundary",
+            "jpeg-boundary.jpg",
+            "image/jpeg",
+            audit_padded_jpeg(limit),
+        ),
+        (
+            "jpeg-over",
+            "jpeg-over.jpg",
+            "image/jpeg",
+            audit_padded_jpeg(limit + 1),
+        ),
+        (
+            "png-below",
+            "png-below.png",
+            "image/png",
+            audit_padded_png(limit - 1),
+        ),
+        (
+            "png-boundary",
+            "png-boundary.png",
+            "image/png",
+            audit_padded_png(limit),
+        ),
+        (
+            "png-over",
+            "png-over.png",
+            "image/png",
+            audit_padded_png(limit + 1),
+        ),
+    ];
+    let mut manifest = String::from(
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>"#,
+    );
+    let mut body = String::new();
+    let mut image_entries = Vec::new();
+    for (id, href, media_type, data) in images {
+        manifest.push_str(&format!(
+            r#"<item id="{id}" href="images/{href}" media-type="{media_type}"/>"#
+        ));
+        body.push_str(&format!(r#"<img src="../images/{href}" alt="{id}"/>"#));
+        image_entries.push(Entry::binary(format!("EPUB/images/{href}"), data));
+    }
+
+    let package = package("", &manifest, r#"<itemref idref="c1"/>"#, "");
+    let mut entries = vec![
+        Entry::text("EPUB/package.opf", package),
+        Entry::text(
+            "EPUB/nav.xhtml",
+            nav(&[("text/ch1.xhtml", "Image boundaries")]),
+        ),
+        Entry::text(
+            "EPUB/text/ch1.xhtml",
+            xhtml("Image boundaries", "en", "", &body, ""),
+        ),
+    ];
+    entries.extend(image_entries);
+    write_epub(entries)
+}
+
+fn audit_padded_jpeg(target_length: usize) -> Vec<u8> {
+    let mut jpeg = audit_small_jpeg();
+    assert!(jpeg.len() < target_length);
+    jpeg.resize(target_length, 0);
+    assert_eq!(jpeg.len(), target_length);
+    assert!(image::load_from_memory(&jpeg).is_ok());
+    jpeg
+}
+
 pub fn audit_small_jpeg() -> Vec<u8> {
     let image = RgbImage::from_fn(32, 24, |x, y| {
         image::Rgb([(x * 7) as u8, (y * 11) as u8, ((x + y) * 13) as u8])
@@ -805,7 +886,7 @@ pub fn audit_small_jpeg() -> Vec<u8> {
     JpegEncoder::new_with_quality(&mut encoded, 90)
         .encode_image(&DynamicImage::ImageRgb8(image))
         .unwrap();
-    assert!(encoded.len() <= 131_072);
+    assert!(encoded.len() <= IMAGE_OPTIMIZATION_LIMIT_BYTES);
     encoded
 }
 

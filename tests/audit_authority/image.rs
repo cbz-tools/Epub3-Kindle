@@ -1,9 +1,7 @@
-use epub3_kindle::{Compression, ConvertOptions, memory};
+use epub3_kindle::{Compression, ConvertOptions, OutputFormat, memory};
 
 use crate::audit_support::epub;
 use crate::audit_support::semantic::{SourceModel, TargetProjection};
-
-const LD_IMAGE_MAX_BYTES: usize = 131_072;
 
 fn plain() -> ConvertOptions {
     ConvertOptions {
@@ -123,8 +121,8 @@ fn non_comic_large_logical_cover_jpeg_and_png_are_bounded_and_controls_are_byte_
             .expect("KF8 image record must be readable");
         match index {
             0 | 1 => {
-                assert!(source_bytes.len() > LD_IMAGE_MAX_BYTES);
-                assert!(target_bytes.len() <= LD_IMAGE_MAX_BYTES);
+                assert!(source_bytes.len() > epub::IMAGE_OPTIMIZATION_LIMIT_BYTES);
+                assert!(target_bytes.len() <= epub::IMAGE_OPTIMIZATION_LIMIT_BYTES);
                 assert_eq!(&target_bytes[..3], &[0xff, 0xd8, 0xff]);
                 assert_eq!(
                     image::guess_format(target_bytes).unwrap(),
@@ -135,7 +133,7 @@ fn non_comic_large_logical_cover_jpeg_and_png_are_bounded_and_controls_are_byte_
                 let target_image = image::load_from_memory(target_bytes).unwrap();
                 if index == 0 {
                     assert!(
-                        target_bytes.len() <= LD_IMAGE_MAX_BYTES,
+                        target_bytes.len() <= epub::IMAGE_OPTIMIZATION_LIMIT_BYTES,
                         "non-comic logical cover JPEG must be bounded"
                     );
                     assert_eq!(
@@ -168,8 +166,8 @@ fn non_comic_large_logical_cover_jpeg_and_png_are_bounded_and_controls_are_byte_
                 }
             }
             2 => {
-                assert!(source_bytes.len() > LD_IMAGE_MAX_BYTES);
-                assert!(target_bytes.len() <= LD_IMAGE_MAX_BYTES);
+                assert!(source_bytes.len() > epub::IMAGE_OPTIMIZATION_LIMIT_BYTES);
+                assert!(target_bytes.len() <= epub::IMAGE_OPTIMIZATION_LIMIT_BYTES);
                 assert_eq!(
                     image::guess_format(target_bytes).unwrap(),
                     image::ImageFormat::Jpeg
@@ -189,7 +187,7 @@ fn non_comic_large_logical_cover_jpeg_and_png_are_bounded_and_controls_are_byte_
                 );
             }
             3 => {
-                assert_eq!(source_bytes.len(), LD_IMAGE_MAX_BYTES);
+                assert_eq!(source_bytes.len(), epub::IMAGE_OPTIMIZATION_LIMIT_BYTES);
                 assert_eq!(
                     target_bytes, source_bytes,
                     "boundary PNG must remain unchanged"
@@ -204,12 +202,12 @@ fn non_comic_large_logical_cover_jpeg_and_png_are_bounded_and_controls_are_byte_
                 assert_eq!(source_bytes.len(), 120_000);
                 assert_eq!(
                     target_bytes, source_bytes,
-                    "100..128 KiB ordinary image must remain byte-identical"
+                    "ordinary image below 512 KiB must remain byte-identical"
                 );
                 image::load_from_memory(target_bytes).expect("medium image must remain decodable");
             }
             5 | 6 => {
-                assert!(source_bytes.len() <= LD_IMAGE_MAX_BYTES);
+                assert!(source_bytes.len() <= epub::IMAGE_OPTIMIZATION_LIMIT_BYTES);
                 assert_eq!(
                     target_bytes, source_bytes,
                     "small image must remain byte-identical"
@@ -219,6 +217,128 @@ fn non_comic_large_logical_cover_jpeg_and_png_are_bounded_and_controls_are_byte_
             _ => unreachable!(),
         }
     }
+}
+
+#[test]
+fn jpeg_and_png_boundaries_are_consistent_for_azw3_and_mobi() {
+    let input = epub::image_size_boundary_resources();
+    let source = SourceModel::parse(&input).expect("image boundary source model");
+    let limit = epub::IMAGE_OPTIMIZATION_LIMIT_BYTES;
+    let images = [
+        (
+            "EPUB/images/jpeg-below.jpg",
+            limit - 1,
+            image::ImageFormat::Jpeg,
+        ),
+        (
+            "EPUB/images/jpeg-boundary.jpg",
+            limit,
+            image::ImageFormat::Jpeg,
+        ),
+        (
+            "EPUB/images/jpeg-over.jpg",
+            limit + 1,
+            image::ImageFormat::Jpeg,
+        ),
+        (
+            "EPUB/images/png-below.png",
+            limit - 1,
+            image::ImageFormat::Png,
+        ),
+        (
+            "EPUB/images/png-boundary.png",
+            limit,
+            image::ImageFormat::Png,
+        ),
+        (
+            "EPUB/images/png-over.png",
+            limit + 1,
+            image::ImageFormat::Png,
+        ),
+    ];
+    let mut image_payloads_by_format = Vec::new();
+
+    for format in [OutputFormat::Azw3, OutputFormat::Mobi] {
+        let options = ConvertOptions {
+            compression: Compression::None,
+            format,
+        };
+        let output = memory::convert(&input, &options).expect("boundary fixture converts");
+        let output: &'static [u8] = Box::leak(output.into_boxed_slice());
+        let target = if format == OutputFormat::Mobi {
+            let db = crate::audit_support::palm::PalmDb::parse(output).expect("MOBI PalmDB");
+            let kf7 = db.mobi_header(0).expect("KF7 compatibility header");
+            assert!(
+                kf7.version < 8,
+                "MOBI must retain its KF7 compatibility stub"
+            );
+            let kf8_index = kf7.exth_u32(121).expect("KF8 boundary") as usize;
+            let target = TargetProjection::parse_at(output, kf8_index).expect("KF8 projection");
+            assert!(
+                target.header.version >= 8,
+                "MOBI reading content must remain KF8"
+            );
+            target
+        } else {
+            TargetProjection::parse(output).expect("AZW3 projection")
+        };
+
+        assert_eq!(
+            target.embedded_resource_numbers.len(),
+            images.len(),
+            "every boundary image must remain referenced in {format:?}"
+        );
+        let mut emitted_images = Vec::new();
+        for ((href, expected_size, source_format), embed_number) in
+            images.iter().zip(&target.embedded_resource_numbers)
+        {
+            let source_bytes = &source.resources.get(*href).expect("source image").1;
+            assert_eq!(
+                source_bytes.len(),
+                *expected_size,
+                "source boundary for {href}"
+            );
+            let target_bytes = target
+                .embedded_bytes(*embed_number)
+                .expect("image embed reference must resolve");
+            let source_image = image::load_from_memory(source_bytes).expect("source image decodes");
+            let target_image = image::load_from_memory(target_bytes).expect("target image decodes");
+
+            if *expected_size <= limit {
+                assert_eq!(
+                    target_bytes, source_bytes,
+                    "{href} at or below limit is retained"
+                );
+                assert_eq!(
+                    image::guess_format(target_bytes).unwrap(),
+                    *source_format,
+                    "{href} keeps its source format"
+                );
+            } else {
+                assert!(
+                    target_bytes.len() <= limit,
+                    "{href} output is within target size"
+                );
+                assert_eq!(
+                    image::guess_format(target_bytes).unwrap(),
+                    image::ImageFormat::Jpeg,
+                    "{href} over limit is optimized to JPEG"
+                );
+                assert_eq!(
+                    (target_image.width(), target_image.height()),
+                    (source_image.width(), source_image.height()),
+                    "{href} can retain its original resolution at this boundary"
+                );
+            }
+            emitted_images.push(target_bytes.to_vec());
+        }
+        image_payloads_by_format.push(emitted_images);
+    }
+
+    assert_eq!(
+        image_payloads_by_format[0], image_payloads_by_format[1],
+        "MOBI and AZW3 must share the same KF8 image policy"
+    );
 }
 
 #[test]
@@ -298,8 +418,11 @@ fn independent_initial_predicted_width(source_bytes: &[u8]) -> u32 {
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut q80, 80)
         .encode_image(&image::DynamicImage::ImageRgb8(source))
         .unwrap();
-    assert!(q80.len() > LD_IMAGE_MAX_BYTES);
-    let scale = (116_736.0 / q80.len() as f64).sqrt().clamp(0.0, 1.0);
+    assert!(q80.len() > epub::IMAGE_OPTIMIZATION_LIMIT_BYTES);
+    let predictive_target = epub::IMAGE_OPTIMIZATION_LIMIT_BYTES * 57 / 64;
+    let scale = (predictive_target as f64 / q80.len() as f64)
+        .sqrt()
+        .clamp(0.0, 1.0);
     (source_width as f64 * scale).round() as u32
 }
 
@@ -323,7 +446,7 @@ fn small_logical_cover_png_uses_independent_jpeg_normalization_and_jpeg_is_uncha
             .record(first_image + cover_offset)
             .expect("logical cover record");
         let source_bytes = &source.resources.get(href).unwrap().1;
-        assert!(source_bytes.len() <= LD_IMAGE_MAX_BYTES);
+        assert!(source_bytes.len() <= epub::IMAGE_OPTIMIZATION_LIMIT_BYTES);
         if source_is_png {
             assert_eq!(
                 image::guess_format(target_bytes).unwrap(),

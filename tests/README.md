@@ -2,6 +2,10 @@
 
 This suite is intentionally independent from the production serializer/parser implementation.
 
+## Repository test inventory
+
+The repository has no in-source unit tests. The retained automated suites are the authority audit E2E in `audit_requirements_e2e.rs`, the public warning API integration tests in `warning_api.rs`, and Rustdoc examples. Fixtures in `audit_support/` and `fixtures/` support the retained integration audits.
+
 ## Rules
 
 1. Requirements come from the authorities documented in `docs/CONVERSION_AUDIT.md` and the frozen product contract.

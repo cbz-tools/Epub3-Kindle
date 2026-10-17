@@ -14,10 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Organized the Rust library API into Memory, File, and Common modules.
-- Kept the existing CLI options, output selection, and conversion behavior
-  unchanged.
 - Increased the EPUB extraction limit from 1 GiB to 4 GiB, allowing larger
   image-heavy EPUB files to be converted.
+- Raised the non-comic image optimization target from 128 KiB to 512 KiB,
+  making it easier to retain high-resolution images. The policy applies to
+  MOBI and AZW3; comic image behavior is unchanged.
+- Applied EXIF Orientation when re-encoding oversized JPEG and PNG images.
 
 ### Removed
 

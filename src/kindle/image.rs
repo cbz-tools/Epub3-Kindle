@@ -7,16 +7,18 @@
 use std::io::Cursor;
 
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, ExtendedColorType, ImageFormat, ImageReader, RgbImage};
+use image::{DynamicImage, ExtendedColorType, ImageDecoder, ImageFormat, ImageReader, RgbImage};
 
 use crate::error::{Error, Result};
 
-pub(crate) const KINDLE_LD_IMAGE_MAX_BYTES: usize = 131_072;
+/// Target size for ordinary non-comic images in Kindle output (512 KiB).
+pub(crate) const KINDLE_LD_IMAGE_MAX_BYTES: usize = 512 * 1024;
 
 const LD_JPEG_MAX_QUALITY: u8 = 80;
 const LD_JPEG_MIN_QUALITY: u8 = 50;
-const LD_PREDICTIVE_TARGET_BYTES: usize = 116_736;
-const LD_DIMENSION_REFINEMENT_MIN_BYTES: usize = 102_400;
+// Keep the original predictive headroom and refinement ratios as the cap grows.
+const LD_PREDICTIVE_TARGET_BYTES: usize = KINDLE_LD_IMAGE_MAX_BYTES * 57 / 64;
+const LD_DIMENSION_REFINEMENT_MIN_BYTES: usize = KINDLE_LD_IMAGE_MAX_BYTES * 25 / 32;
 const MAX_FURTHER_RESIZE_CORRECTIONS: usize = 3;
 const MAX_DIMENSION_REFINEMENT_PROBES: usize = 4;
 const JPEG_MAX_DIMENSION: u32 = u16::MAX as u32;
@@ -24,9 +26,10 @@ const COVER_JPEG_QUALITY: u8 = 100;
 
 /// Convert one ordinary JPEG or PNG to a valid bounded JPEG.
 ///
-/// The source is decoded once into RGB pixels. The Q80 original-size probe is
-/// followed by a predictive resize and a bounded, sequential quality search;
-/// quality trials borrow the resized RGB buffer and never clone it.
+/// The source is decoded once into RGB pixels. After the Q80 original-size
+/// probe, the remaining quality range is searched at source resolution first;
+/// only images that still exceed the limit are predictively resized. Quality
+/// trials borrow the RGB buffer and never clone it.
 pub(crate) fn convert_large_image_to_jpeg(data: &[u8], media_type: &str) -> Result<Vec<u8>> {
     let rgb = decode_source(data, media_type)?;
     let original_width = rgb.width();
@@ -35,6 +38,10 @@ pub(crate) fn convert_large_image_to_jpeg(data: &[u8], media_type: &str) -> Resu
     let probe = encode_rgb(&rgb, LD_JPEG_MAX_QUALITY)?;
     if probe.len() <= KINDLE_LD_IMAGE_MAX_BYTES {
         return Ok(probe);
+    }
+
+    if let Some(accepted) = bounded_quality_search(&rgb)?.accepted {
+        return Ok(accepted);
     }
 
     let (mut width, mut height) = predicted_dimensions(
@@ -105,7 +112,7 @@ pub(crate) fn normalize_small_cover_png(
 
 fn decode_source(data: &[u8], media_type: &str) -> Result<RgbImage> {
     let expected = expected_format(media_type)?;
-    let image = decode_image(data, media_type)?;
+    let image = decode_image_with_orientation(data, media_type, true)?;
     if expected == ImageFormat::Png {
         Ok(flatten_on_white(&image))
     } else {
@@ -114,6 +121,14 @@ fn decode_source(data: &[u8], media_type: &str) -> Result<RgbImage> {
 }
 
 fn decode_image(data: &[u8], media_type: &str) -> Result<DynamicImage> {
+    decode_image_with_orientation(data, media_type, false)
+}
+
+fn decode_image_with_orientation(
+    data: &[u8],
+    media_type: &str,
+    apply_orientation: bool,
+) -> Result<DynamicImage> {
     let expected = expected_format(media_type)?;
 
     let reader = ImageReader::new(Cursor::new(data))
@@ -130,9 +145,22 @@ fn decode_image(data: &[u8], media_type: &str) -> Result<DynamicImage> {
         )));
     }
 
-    reader
-        .decode()
-        .map_err(|error| Error::Output(format!("large image decode failed: {error}")))
+    if apply_orientation {
+        let mut decoder = reader
+            .into_decoder()
+            .map_err(|error| Error::Output(format!("large image decode failed: {error}")))?;
+        let orientation = decoder.orientation().map_err(|error| {
+            Error::Output(format!("large image orientation read failed: {error}"))
+        })?;
+        let mut image = DynamicImage::from_decoder(decoder)
+            .map_err(|error| Error::Output(format!("large image decode failed: {error}")))?;
+        image.apply_orientation(orientation);
+        Ok(image)
+    } else {
+        reader
+            .decode()
+            .map_err(|error| Error::Output(format!("large image decode failed: {error}")))
+    }
 }
 
 fn expected_format(media_type: &str) -> Result<ImageFormat> {
