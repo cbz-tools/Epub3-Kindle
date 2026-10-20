@@ -40,6 +40,16 @@ epub3-kindle input.epub
 
 出力先を省略した場合、入力パスの拡張子を `.mobi` に置き換えたパスが使用されます。
 
+## GUIによる一括変換（Windows）
+
+Windowsでは、[CLI Batch Runner](https://github.com/cbz-tools/cli-batch-runner)を使用して、複数のEPUBファイルをGUIから一括変換できます。
+
+ファイルのドラッグ＆ドロップやフォルダの追加による登録、順次変換、進捗状況の確認、ファイルごとの実行結果やログの確認に対応しています。
+
+CLI Batch Runnerは別アプリケーションとして提供されており、Epub3-Kindleのインストールが必要です。
+
+ダウンロードと設定方法は、[CLI Batch RunnerのREADME](https://github.com/cbz-tools/cli-batch-runner#readme)を参照してください。
+
 ## 主な機能
 
 - AZW3出力

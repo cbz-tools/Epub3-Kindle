@@ -40,6 +40,16 @@ epub3-kindle input.epub
 
 If the output path is omitted, the input extension is replaced with `.mobi`.
 
+## Batch Conversion with GUI (Windows)
+
+On Windows, [CLI Batch Runner](https://github.com/cbz-tools/cli-batch-runner) lets you convert multiple EPUB files through a graphical interface.
+
+It supports adding files via drag and drop or importing files from folders, sequential conversion, progress monitoring, and viewing per-file execution results and logs.
+
+CLI Batch Runner is distributed as a separate application and requires Epub3-Kindle to be installed.
+
+For downloads and setup instructions, see the [CLI Batch Runner README](https://github.com/cbz-tools/cli-batch-runner#readme).
+
 ## Features
 
 - AZW3 output
