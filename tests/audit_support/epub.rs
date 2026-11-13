@@ -1443,6 +1443,86 @@ pub fn epc005_xpgt_page_template() -> Vec<u8> {
     ])
 }
 
+pub fn epc018_link_target_case(element: &str, href: &str) -> Vec<u8> {
+    let tested_link = match element {
+        "a" => format!(r#"<a href="{href}">AUTH_EPC018_LINK_TARGET</a>"#),
+        "area" => format!(
+            r#"<map name="link-map"><area shape="rect" coords="0,0,1,1" href="{href}" alt="AUTH_EPC018_LINK_TARGET"/></map>"#
+        ),
+        "both" => format!(
+            r#"<a href="{href}">AUTH_EPC018_ANCHOR</a><map name="link-map"><area shape="rect" coords="0,0,1,1" href="{href}" alt="AUTH_EPC018_AREA"/></map>"#
+        ),
+        _ => panic!("unsupported EPC-018 link element {element}"),
+    };
+    let opf = package(
+        "",
+        r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="chapter" href="text/chapter.xhtml" media-type="application/xhtml+xml"/>
+<item id="target" href="text/target.xhtml" media-type="application/xhtml+xml"/>
+<item id="off-spine" href="text/off-spine.xhtml" media-type="application/xhtml+xml"/>
+<item id="icon" href="images/icon.png" media-type="image/png"/>
+<item id="alternate-icon" href="images/alternate-icon.png" media-type="image/png"/>
+<item id="normal-css" href="styles/normal.css" media-type="text/css"/>
+<item id="alternate-css" href="styles/alternate.css" media-type="text/css"/>"#,
+        r#"<itemref idref="chapter"/><itemref idref="target"/>"#,
+        "",
+    );
+    let head = r#"<link rel="icon" href="../images/icon.png" type="image/png"/>
+<link rel="alternate icon" href="../images/alternate-icon.png" type="image/png"/>
+<link rel="stylesheet" href="../styles/normal.css"/>
+<link rel="alternate stylesheet" title="Alternate" href="../styles/alternate.css"/>"#;
+    let chapter = xhtml(
+        "EPC-018 link element boundary",
+        "en",
+        "",
+        &format!(
+            r##"<h1 id="start">AUTH_EPC018_START</h1><p>{tested_link}</p><img src="../images/icon.png" usemap="#link-map" alt="Linked icon map"/>"##
+        ),
+        head,
+    );
+    write_epub(vec![
+        Entry::text("EPUB/package.opf", opf),
+        Entry::text(
+            "EPUB/nav.xhtml",
+            nav(&[
+                ("text/chapter.xhtml#start", "EPC-018 start"),
+                ("text/target.xhtml#destination", "EPC-018 destination"),
+            ]),
+        ),
+        Entry::text("EPUB/text/chapter.xhtml", chapter),
+        Entry::text(
+            "EPUB/text/target.xhtml",
+            xhtml(
+                "EPC-018 target",
+                "en",
+                "",
+                "<h2 id=\"destination\">AUTH_EPC018_DESTINATION</h2>",
+                "",
+            ),
+        ),
+        Entry::text(
+            "EPUB/text/off-spine.xhtml",
+            xhtml(
+                "EPC-018 off-spine target",
+                "en",
+                "",
+                "<p id=\"off-spine\">AUTH_EPC018_OFF_SPINE</p>",
+                "",
+            ),
+        ),
+        Entry::text(
+            "EPUB/styles/normal.css",
+            ".link-normal-style-marker { color: red; }",
+        ),
+        Entry::text(
+            "EPUB/styles/alternate.css",
+            ".link-alternate-style-marker { color: blue; }",
+        ),
+        Entry::binary("EPUB/images/icon.png", tiny_png()),
+        Entry::binary("EPUB/images/alternate-icon.png", tiny_png()),
+    ])
+}
+
 pub fn epc006_mathml_descendant_content() -> Vec<u8> {
     let opf = package(
         "",

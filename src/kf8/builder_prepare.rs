@@ -180,7 +180,6 @@ fn prepare_link_materialization(
                 section_number,
                 anchor_indices,
                 css_resources,
-                dropped_stylesheets: &section.dropped_stylesheets,
             },
             warnings,
         )?;

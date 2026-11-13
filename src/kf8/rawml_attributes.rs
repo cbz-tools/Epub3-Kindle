@@ -1,7 +1,5 @@
 //! Attribute-level RawML rewriting shared by the link and resource passes.
 
-use quick_xml::{Reader, events::Event};
-
 use crate::css::advance_css_char;
 use crate::error::Result;
 use crate::xhtml::scan::{
@@ -141,23 +139,4 @@ pub(super) fn rewrite_quoted_attributes(
     } else {
         Ok(source)
     }
-}
-
-pub(super) fn tag_has_attribute_token(tag: &str, name: &str, token: &str) -> bool {
-    let mut reader = Reader::from_str(tag);
-    let Ok(event) = reader.read_event() else {
-        return false;
-    };
-    let element = match event {
-        Event::Start(element) | Event::Empty(element) => element,
-        _ => return false,
-    };
-    element.attributes().flatten().any(|attribute| {
-        attribute.key.as_ref().eq_ignore_ascii_case(name.as_bytes())
-            && attribute.unescape_value().is_ok_and(|value| {
-                value
-                    .split_ascii_whitespace()
-                    .any(|value| value.eq_ignore_ascii_case(token))
-            })
-    })
 }

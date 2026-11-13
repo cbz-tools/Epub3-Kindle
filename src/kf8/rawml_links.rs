@@ -4,15 +4,12 @@ use super::css_flow::{CssResourceIndex, SectionIndex, css_flow_number};
 use super::format::to_base32_fixed;
 use super::position::{self, PositionMap};
 use super::rawml::{POSFID_PLACEHOLDER, SectionParts};
-use super::rawml_attributes::{
-    AttributeRewrite, rewrite_quoted_attributes, tag_has_attribute_token,
-};
+use super::rawml_attributes::{AttributeRewrite, rewrite_quoted_attributes};
 use crate::WarningCode;
 use crate::WarningCollector;
 use crate::error::Result;
 use crate::kindle::KindleSection;
-use crate::xhtml::path::{is_external_reference, percent_decode, resolve_path};
-use quick_xml::{Reader, events::Event};
+use crate::xhtml::path::{is_external_reference, percent_decode};
 
 fn generated_section_path(index: usize) -> String {
     format!("Text/part{index:04}.xhtml")
@@ -30,7 +27,6 @@ pub(super) struct LinkRewriteContext<'a, 'resource> {
     pub(super) section_number: usize,
     pub(super) anchor_indices: &'a [position::AnchorIndex],
     pub(super) css_resources: &'a CssResourceIndex<'resource>,
-    pub(super) dropped_stylesheets: &'a [String],
 }
 
 pub(super) fn rewrite_internal_links(
@@ -44,7 +40,6 @@ pub(super) fn rewrite_internal_links(
         section_number,
         anchor_indices,
         css_resources,
-        dropped_stylesheets,
     } = context;
     if anchor_indices.len() != section_index.len() || section_number >= anchor_indices.len() {
         return Err(crate::error::Error::Output(
@@ -55,26 +50,9 @@ pub(super) fn rewrite_internal_links(
     let rewritten = rewrite_quoted_attributes(
         source,
         &["href="],
-        |_source, tag_name, tag, target| {
+        |_source, tag_name, _tag, target| {
             let tag_name = tag_name.rsplit(':').next().unwrap_or(tag_name);
-            if tag_name.eq_ignore_ascii_case("image") || tag_name.eq_ignore_ascii_case("use") {
-                return Ok(None);
-            }
-            if tag_name.eq_ignore_ascii_case("link")
-                && tag_has_attribute_token(tag, "rel", "pronunciation")
-            {
-                return Ok(None);
-            }
-            if tag_name.eq_ignore_ascii_case("link")
-                && tag_has_attribute_token(tag, "rel", "stylesheet")
-                && resolve_path(section_href, target)
-                    .is_some_and(|resolved| dropped_stylesheets.contains(&resolved))
-            {
-                return Ok(None);
-            }
-            if tag_name.eq_ignore_ascii_case("link")
-                && tag_has_attribute_value(tag, "type", "application/adobe-page-template+xml")
-            {
+            if !tag_name.eq_ignore_ascii_case("a") && !tag_name.eq_ignore_ascii_case("area") {
                 return Ok(None);
             }
             // CSS is a non-document transport resource only when it resolves in
@@ -156,23 +134,6 @@ fn is_unresolved_root_relative_web_link(tag_name: &str, target_path: &str) -> bo
         None => true,
         Some((_, extension)) => extension.eq_ignore_ascii_case("php"),
     }
-}
-
-fn tag_has_attribute_value(tag: &str, name: &str, value: &str) -> bool {
-    let mut reader = Reader::from_str(tag);
-    let Ok(event) = reader.read_event() else {
-        return false;
-    };
-    let element = match event {
-        Event::Start(element) | Event::Empty(element) => element,
-        _ => return false,
-    };
-    element.attributes().flatten().any(|attribute| {
-        attribute.key.as_ref().eq_ignore_ascii_case(name.as_bytes())
-            && attribute
-                .unescape_value()
-                .is_ok_and(|attribute_value| attribute_value.eq_ignore_ascii_case(value))
-    })
 }
 
 pub(super) fn materialize_internal_links(

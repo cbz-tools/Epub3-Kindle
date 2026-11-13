@@ -462,6 +462,11 @@ pub fn parse_trailer(record: &[u8], flags: u16) -> Result<PalmDocTrailer, String
             reverse_vwi_bytes: 0,
         });
     }
+    if flags & !0x0003 != 0 {
+        return Err(format!(
+            "unsupported trailing-data flags for the independent audit parser: {flags:#06x}"
+        ));
+    }
     let (trailer_byte_count, reverse_vwi_bytes) = reverse_varint_at_end(record)?;
     if trailer_byte_count < reverse_vwi_bytes || trailer_byte_count > record.len() {
         return Err("trailing-data length is outside text record".into());
@@ -477,23 +482,22 @@ pub fn parse_trailer(record: &[u8], flags: u16) -> Result<PalmDocTrailer, String
         if tbs_start == 0 {
             return Err("TBS trailer has no preceding multibyte marker".into());
         }
-        let mut found = None;
-        for overlap_len in 0..=3usize {
-            let marker = tbs_start
-                .checked_sub(overlap_len + 1)
-                .ok_or("marker underflow")?;
-            if record[marker] != overlap_len as u8 {
-                continue;
-            }
-            let candidate = &record[marker + 1..tbs_start];
-            if overlap_len == 0 || candidate.iter().all(|byte| (*byte & 0xc0) == 0x80) {
-                found = Some((marker, candidate.to_vec()));
-                break;
-            }
+        // The MobileRead MOBI format reference describes flag 0x0001 as
+        // [overlap bytes][size/flags byte], followed in flag order by the
+        // flag 0x0002 TBS entry:
+        // https://wiki.mobileread.com/wiki/MOBI#Multibyte_character_overlap
+        // Reading the count byte from before the overlap bytes reverses that
+        // framing and can mistake arbitrary text bytes for the marker.
+        let marker = tbs_start - 1;
+        let overlap_len = usize::from(record[marker] & 0x03);
+        marker_start = marker
+            .checked_sub(overlap_len)
+            .ok_or("multibyte overlap precedes text record")?;
+        let candidate = &record[marker_start..marker];
+        if overlap_len > 0 && !candidate.iter().all(|byte| (*byte & 0xc0) == 0x80) {
+            return Err("multibyte overlap contains a non-continuation byte".into());
         }
-        let (marker, candidate) = found.ok_or("multibyte marker is not framed before TBS")?;
-        marker_start = marker;
-        overlap = candidate;
+        overlap = candidate.to_vec();
     } else if has_multibyte {
         return Err(
             "multibyte flag without TBS framing is unsupported by this audit parser".into(),

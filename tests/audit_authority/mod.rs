@@ -17,6 +17,7 @@ mod epc012;
 mod epc013;
 mod epc014;
 mod epc015_017;
+mod epc018;
 mod epub_input;
 mod file_paths;
 mod format;
