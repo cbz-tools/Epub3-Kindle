@@ -1,6 +1,6 @@
 [package]
 name = "epub3-kindle"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 rust-version = "1.85"
 description = "A Rust library and CLI for converting KindleGen-compatible EPUB 3 publications to Kindle KF8-only AZW3 or canonical Dual MOBI"
@@ -36,12 +36,12 @@ default = ["cli"]
 cli = []
 
 [dependencies]
-flate2 = "1.1"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend", "runtime_detection"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 quick-xml = "0.37"
 thiserror = "2"
 unicode-normalization = "0.1"
-zip = "2.2"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 winresource = "0.1"
